@@ -147,7 +147,7 @@ mainPanel.Size = UDim2.new(1, -6, 1, -6)
 mainPanel.Position = UDim2.new(0, 3, 0, 3)
 mainPanel.BackgroundColor3 = Color3.fromRGB(17, 14, 28)
 mainPanel.BorderSizePixel = 0
-mainPanel.CanvasSize = UDim2.new(0, 0, 0, 1240)
+mainPanel.CanvasSize = UDim2.new(0, 0, 0, 1280)
 mainPanel.ScrollBarThickness = 4
 mainPanel.Parent = outerFrame
 
@@ -446,7 +446,7 @@ progressGradient.Color = ColorSequence.new({
 
 -- ช่องกรอกค่าขีดจำกัดเงินขั้นต่ำสำหรับการขาย (Custom Threshold Input)
 local thresholdContainer = Instance.new("Frame")
-thresholdContainer.Size = UDim2.new(1, -24, 0, 50)
+thresholdContainer.Size = UDim2.new(1, -24, 0, 90)
 thresholdContainer.Position = UDim2.new(0, 12, 0, 360)
 thresholdContainer.BackgroundColor3 = Color3.fromRGB(28, 24, 48)
 thresholdContainer.BorderSizePixel = 0
@@ -454,7 +454,7 @@ thresholdContainer.Parent = mainPanel
 Instance.new("UICorner", thresholdContainer).CornerRadius = UDim.new(0, 10)
 
 local thresholdLabel = Instance.new("TextLabel")
-thresholdLabel.Size = UDim2.new(0.6, 0, 1, 0)
+thresholdLabel.Size = UDim2.new(0.6, 0, 0, 38)
 thresholdLabel.Position = UDim2.new(0, 12, 0, 0)
 thresholdLabel.BackgroundTransparency = 1
 thresholdLabel.Font = Enum.Font.GothamBold
@@ -466,7 +466,7 @@ thresholdLabel.Parent = thresholdContainer
 
 local thresholdBox = Instance.new("TextBox")
 thresholdBox.Size = UDim2.new(0, 90, 0, 30)
-thresholdBox.Position = UDim2.new(1, -102, 0.5, -15)
+thresholdBox.Position = UDim2.new(1, -102, 0, 4)
 thresholdBox.BackgroundColor3 = Color3.fromRGB(45, 38, 72)
 thresholdBox.TextColor3 = Color3.fromRGB(250, 199, 117)
 thresholdBox.Font = Enum.Font.GothamBold
@@ -476,9 +476,46 @@ thresholdBox.ClearTextOnFocus = false
 thresholdBox.Parent = thresholdContainer
 Instance.new("UICorner", thresholdBox).CornerRadius = UDim.new(0, 6)
 
+local webhookLabel = Instance.new("TextLabel")
+webhookLabel.Size = UDim2.new(0, 64, 0, 30)
+webhookLabel.Position = UDim2.new(0, 8, 0, 50)
+webhookLabel.BackgroundTransparency = 1
+webhookLabel.Font = Enum.Font.GothamBold
+webhookLabel.Text = "Webhook"
+webhookLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+webhookLabel.TextSize = 10
+webhookLabel.TextXAlignment = Enum.TextXAlignment.Left
+webhookLabel.Parent = thresholdContainer
+
+local webhookBox = Instance.new("TextBox")
+webhookBox.Size = UDim2.new(1, -152, 0, 30)
+webhookBox.Position = UDim2.new(0, 74, 0, 50)
+webhookBox.BackgroundColor3 = Color3.fromRGB(45, 38, 72)
+webhookBox.TextColor3 = Color3.fromRGB(250, 199, 117)
+webhookBox.PlaceholderColor3 = Color3.fromRGB(160, 160, 160)
+webhookBox.PlaceholderText = "Paste Discord URL"
+webhookBox.Font = Enum.Font.Gotham
+webhookBox.TextSize = 10
+webhookBox.Text = ""
+webhookBox.ClearTextOnFocus = false
+webhookBox.TextXAlignment = Enum.TextXAlignment.Left
+webhookBox.Parent = thresholdContainer
+Instance.new("UICorner", webhookBox).CornerRadius = UDim.new(0, 6)
+
+local webhookSaveButton = Instance.new("TextButton")
+webhookSaveButton.Size = UDim2.new(0, 64, 0, 30)
+webhookSaveButton.Position = UDim2.new(1, -72, 0, 50)
+webhookSaveButton.BackgroundColor3 = Color3.fromRGB(60, 52, 137)
+webhookSaveButton.Text = "Save"
+webhookSaveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+webhookSaveButton.Font = Enum.Font.GothamBold
+webhookSaveButton.TextSize = 11
+webhookSaveButton.Parent = thresholdContainer
+Instance.new("UICorner", webhookSaveButton).CornerRadius = UDim.new(0, 6)
+
 local togglesContainer = Instance.new("Frame")
 togglesContainer.Size = UDim2.new(1, -24, 0, 440)
-togglesContainer.Position = UDim2.new(0, 12, 0, 424)
+togglesContainer.Position = UDim2.new(0, 12, 0, 464)
 togglesContainer.BackgroundTransparency = 1
 togglesContainer.Parent = mainPanel
 
@@ -510,6 +547,12 @@ end
 local HttpService = game:GetService("HttpService")
 local DISCORD_WEBHOOK_URL = ""
 local WEBHOOK_INTERVAL_SECONDS = 10
+local function isValidDiscordWebhook(url)
+    return url == ""
+        or string.match(url, "^https://discord%.com/api/webhooks/") ~= nil
+        or string.match(url, "^https://discordapp%.com/api/webhooks/") ~= nil
+end
+
 local webhookRequest = request or http_request
 if type(webhookRequest) ~= "function" and type(syn) == "table" then
     webhookRequest = syn.request
@@ -557,15 +600,10 @@ task.spawn(function()
     end
 end)
 
-queueWebhookEvent("Script started")
-if DISCORD_WEBHOOK_URL ~= "" and type(webhookRequest) ~= "function" then
-    warn("Discord webhook unavailable: executor HTTP request API not found")
-end
-
 local CONFIG_FILE = "EpicAFK_Piriya_config.json"
 
 local function saveSettings()
-    if type(writefile) ~= "function" then return end
+    if type(writefile) ~= "function" then return false end
 
     local savedStates = {}
     for key, value in pairs(states) do
@@ -575,12 +613,13 @@ local function saveSettings()
     local ok, encoded = pcall(function()
         return HttpService:JSONEncode({
             states = savedStates,
-            threshold = thresholdBox.Text
+            threshold = thresholdBox.Text,
+            webhookUrl = webhookBox.Text
         })
     end)
-    if ok then
-        pcall(writefile, CONFIG_FILE, encoded)
-    end
+    if not ok then return false end
+    local writeOk, result = pcall(writefile, CONFIG_FILE, encoded)
+    return writeOk and result ~= false
 end
 
 local function loadSettings()
@@ -607,6 +646,10 @@ local function loadSettings()
 
     if type(config.threshold) == "string" then
         thresholdBox.Text = config.threshold
+    end
+    if type(config.webhookUrl) == "string" and isValidDiscordWebhook(config.webhookUrl) then
+        webhookBox.Text = config.webhookUrl
+        DISCORD_WEBHOOK_URL = config.webhookUrl
     end
 end
 
@@ -668,6 +711,33 @@ local function saveConfigStore()
 end
 
 loadSettings()
+webhookSaveButton.MouseButton1Click:Connect(function()
+    local url = string.gsub(webhookBox.Text, "^%s*(.-)%s*$", "%1")
+    if not isValidDiscordWebhook(url) then
+        webhookSaveButton.Text = "Invalid URL"
+        return
+    end
+
+    webhookBox.Text = url
+    DISCORD_WEBHOOK_URL = url
+    local isSaved = saveSettings()
+    if url == "" then
+        webhookSaveButton.Text = isSaved and "Cleared" or "Runtime"
+    elseif type(webhookRequest) ~= "function" then
+        webhookSaveButton.Text = "No HTTP"
+    else
+        webhookSaveButton.Text = isSaved and "Saved" or "Runtime"
+        queueWebhookEvent("Webhook configured")
+    end
+end)
+webhookBox:GetPropertyChangedSignal("Text"):Connect(function()
+    webhookSaveButton.Text = "Save"
+end)
+queueWebhookEvent("Script started")
+if DISCORD_WEBHOOK_URL ~= "" and type(webhookRequest) ~= "function" then
+    warn("Discord webhook unavailable: executor HTTP request API not found")
+end
+
 configStore = loadConfigStore()
 local selectedConfig = configStore.loadOnStart
 if selectedConfig then
@@ -828,7 +898,7 @@ createFeatureToggle(8, "Block Notifications", "ซ่อนหน้าต่า
 local configsPanel = Instance.new("Frame")
 configsPanel.Name = "ConfigsPanel"
 configsPanel.Size = UDim2.new(1, -24, 0, 330)
-configsPanel.Position = UDim2.new(0, 12, 0, 880)
+configsPanel.Position = UDim2.new(0, 12, 0, 920)
 configsPanel.BackgroundTransparency = 1
 configsPanel.Parent = mainPanel
 
