@@ -82,6 +82,7 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "EpicAFK_Piriya"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.DisplayOrder = 10000
 
 pcall(function()
     screenGui.Parent = CoreGui
@@ -89,6 +90,18 @@ end)
 if not screenGui.Parent then
     screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 end
+
+local blackScreen = Instance.new("TextButton")
+blackScreen.Name = "AFKBlackScreen"
+blackScreen.Size = UDim2.fromScale(1, 1)
+blackScreen.Position = UDim2.fromScale(0, 0)
+blackScreen.BackgroundColor3 = Color3.new(0, 0, 0)
+blackScreen.BorderSizePixel = 0
+blackScreen.Text = ""
+blackScreen.AutoButtonColor = false
+blackScreen.Visible = false
+blackScreen.ZIndex = 100
+blackScreen.Parent = screenGui
 
 -- 1. ปุ่มเปิดหน้าต่างแบบย่อ (Floating Open Button)
 local openButton = Instance.new("ImageButton")
@@ -234,6 +247,27 @@ closeBtn.Font = Enum.Font.GothamBold
 closeBtn.TextSize = 14
 closeBtn.Parent = header
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+local afkButton = Instance.new("TextButton")
+afkButton.Size = UDim2.new(0, 68, 0, 28)
+afkButton.Position = UDim2.new(1, -110, 0, 10)
+afkButton.BackgroundColor3 = Color3.fromRGB(60, 58, 75)
+afkButton.Text = "AFK"
+afkButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+afkButton.Font = Enum.Font.GothamBold
+afkButton.TextSize = 12
+afkButton.Parent = header
+Instance.new("UICorner", afkButton).CornerRadius = UDim.new(0, 6)
+
+afkButton.MouseButton1Click:Connect(function()
+    blackScreen.Visible = true
+    afkButton.Text = "AFK ON"
+end)
+
+blackScreen.MouseButton1Click:Connect(function()
+    blackScreen.Visible = false
+    afkButton.Text = "AFK"
+end)
 
 closeBtn.MouseButton1Click:Connect(function()
     outerFrame.Visible = false
@@ -1224,4 +1258,4 @@ task.spawn(function()
     end
 end)
 
-print("รันโปรเสร็จแล้วครับ")
+print("Epic AFK Master UI with Custom Smart Auto-Sell Loaded Smoothly.")
