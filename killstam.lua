@@ -3,6 +3,10 @@
 -- RUN IN Volt Executor (Client-side)
 -- ==========================================================
 
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
@@ -11,6 +15,10 @@ local UserInputService = game:GetService("UserInputService")
 local VirtualUser = game:GetService("VirtualUser")
 
 local localPlayer = Players.LocalPlayer
+while not localPlayer do
+    task.wait()
+    localPlayer = Players.LocalPlayer
+end
 local playerName = localPlayer.Name
 
 -- ดึงรูปอวาตาร์ของผู้เล่น
@@ -1216,4 +1224,4 @@ task.spawn(function()
     end
 end)
 
-print("Epic AFK Master UI with Custom Smart Auto-Sell Loaded Smoothly.")
+print("รันโปรเสร็จแล้วครับ")
