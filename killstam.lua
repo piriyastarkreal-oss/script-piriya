@@ -508,6 +508,60 @@ local function refreshToggleVisuals()
 end
 
 local HttpService = game:GetService("HttpService")
+local DISCORD_WEBHOOK_URL = ""
+local WEBHOOK_INTERVAL_SECONDS = 10
+local webhookRequest = request or http_request
+if type(webhookRequest) ~= "function" and type(syn) == "table" then
+    webhookRequest = syn.request
+end
+if type(webhookRequest) ~= "function" and type(http) == "table" then
+    webhookRequest = http.request
+end
+
+local webhookEvents = {}
+local function queueWebhookEvent(description)
+    if DISCORD_WEBHOOK_URL == "" or type(webhookRequest) ~= "function" then return end
+    description = string.sub(tostring(description), 1, 120)
+    webhookEvents[description] = (webhookEvents[description] or 0) + 1
+end
+
+task.spawn(function()
+    while true do
+        task.wait(WEBHOOK_INTERVAL_SECONDS)
+        if next(webhookEvents) then
+            local pendingEvents = webhookEvents
+            webhookEvents = {}
+            local lines = {}
+            for description, count in pairs(pendingEvents) do
+                table.insert(lines, string.format("- %s (x%d)", description, count))
+            end
+            table.sort(lines)
+
+            local content = "AFK activity (last " .. WEBHOOK_INTERVAL_SECONDS .. "s):\n" .. table.concat(lines, "\n")
+            if #content > 1900 then
+                content = string.sub(content, 1, 1870) .. "\n..."
+            end
+
+            local ok, response = pcall(webhookRequest, {
+                Url = DISCORD_WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({ content = content })
+            })
+            if not ok then
+                warn("Discord webhook request failed")
+            elseif type(response) == "table" and response.StatusCode and response.StatusCode >= 400 then
+                warn("Discord webhook returned HTTP " .. tostring(response.StatusCode))
+            end
+        end
+    end
+end)
+
+queueWebhookEvent("Script started")
+if DISCORD_WEBHOOK_URL ~= "" and type(webhookRequest) ~= "function" then
+    warn("Discord webhook unavailable: executor HTTP request API not found")
+end
+
 local CONFIG_FILE = "EpicAFK_Piriya_config.json"
 
 local function saveSettings()
@@ -1121,6 +1175,7 @@ task.spawn(function()
                 for i = 1, 50 do
                     collectBalanceEvent:FireServer(i)
                 end
+                queueWebhookEvent("Collect: sent 50 requests")
             end)
         end
         
@@ -1134,6 +1189,7 @@ task.spawn(function()
                             local upgradeData = UpgradesConfig[childName]
                             if upgradeData and currentMoney >= upgradeData.price then
                                 buyUpgradeEvent:FireServer(childName)
+                                queueWebhookEvent("Upgrade request: " .. childName)
                                 task.wait(0.2)
                             end
                             checkAndBuy(childName)
@@ -1148,13 +1204,18 @@ task.spawn(function()
         
         if states.levelUnit and levelUpSlotEvent and DataController then
             pcall(function()
+                local levelRequests = 0
                 for slotIdx = 1, 50 do
                     if not states.levelUnit then break end
                     local slotData = DataController.Slots and DataController.Slots[tostring(slotIdx)] and DataController.Slots[tostring(slotIdx)]()
                     if slotData and slotData.unitId then
                         levelUpSlotEvent:FireServer(slotIdx)
+                        levelRequests = levelRequests + 1
                         task.wait(0.1)
                     end
+                end
+                if levelRequests > 0 then
+                    queueWebhookEvent("Level-up requests: " .. tostring(levelRequests))
                 end
             end)
         end
@@ -1162,6 +1223,7 @@ task.spawn(function()
         if states.equipBest and equipBestEvent then
             pcall(function()
                 equipBestEvent:FireServer()
+                queueWebhookEvent("Equip best request")
             end)
         end
         
@@ -1200,11 +1262,13 @@ task.spawn(function()
                 
                 if targetToBuy then
                     buyDiceEvent:FireServer(targetToBuy)
+                    queueWebhookEvent("Buy dice request: " .. targetToBuy)
                     task.wait(0.3)
                 end
                 
                 if bestOwnedDice and DataController.Dice() ~= bestOwnedDice then
                     equipDiceEvent:FireServer(bestOwnedDice)
+                    queueWebhookEvent("Equip dice request: " .. bestOwnedDice)
                 end
             end)
         end
@@ -1217,6 +1281,7 @@ task.spawn(function()
                     local currentMoney = DataController.Money() or 0
                     if currentMoney >= nextRebirthData.cost then
                         rebirthEvent:FireServer()
+                        queueWebhookEvent("Rebirth request")
                     end
                 end
             end)
@@ -1252,6 +1317,7 @@ task.spawn(function()
 
                 if #itemsToSellKeys > 0 then
                     sellInventoryEvent:InvokeServer(itemsToSellKeys)
+                    queueWebhookEvent("Sell request: " .. tostring(#itemsToSellKeys) .. " items")
                 end
             end)
         end
