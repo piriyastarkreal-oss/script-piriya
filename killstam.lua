@@ -1,1397 +1,780 @@
--- ==========================================================
--- SCRIPT ULTIMATE AFK MASTER UI + SMART AUTO-SELL (CUSTOM THRESHOLD)
--- RUN IN Volt Executor (Client-side)
--- ==========================================================
-
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
+-- โค้ดเมนู UI Piriya Menu (เรดาร์ระยะปกติ + เพิ่มฟังก์ชันปรับความเร็ววิ่ง)
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
 
-local localPlayer = Players.LocalPlayer
-while not localPlayer do
-    task.wait()
-    localPlayer = Players.LocalPlayer
-end
-local playerName = localPlayer.Name
-
--- ดึงรูปอวาตาร์ของผู้เล่น
-local playerThumbnail = ""
-local okThumb, thumbImg = pcall(Players.GetUserThumbnailAsync, Players, localPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
-if okThumb then playerThumbnail = thumbImg end
-
--- โหลดโมดูลข้อมูลที่จำเป็นจากเกม
-local UpgradesConfig = require(ReplicatedStorage.Framework.Features.Upgrades.Upgrades)
-local TreeStructure = require(ReplicatedStorage.Framework.Features.Upgrades.TreeStructure)
-local DiceConfig = require(ReplicatedStorage.Framework.Features.Rolling.Dice)
-local RebirthsConfig = require(ReplicatedStorage.Framework.Features.Rebirth.Rebirths)
-local framework = ReplicatedStorage:FindFirstChild("Framework")
-local DataController = framework and require(framework.Features.Data.DataController) or nil
-
--- โหลดโมดูลระบบขาย (Sell System) เพื่อดึงข้อมูลมาทำ Smart Sell
-local SellUtil = framework and require(framework.Features.Selling.SellUtil) or nil
-local EntryRegistry = framework and require(framework.Features.Inventory.EntryRegistry) or nil
-
--- ค้นหา RemoteEvents ของเกม
-local network = ReplicatedStorage:WaitForChild("Network", 5)
-local function findRemote(service, folderName, remoteName)
-    if not service then return nil end
-    local folder = service:WaitForChild(folderName, 5)
-    return (folder and folder:WaitForChild(remoteName, 5))
-        or service:FindFirstChild(remoteName, true)
-        or (network and network:FindFirstChild(remoteName, true))
+if CoreGui:FindFirstChild("PiriyaMenuHub") then
+    CoreGui.PiriyaMenuHub:Destroy()
 end
 
-local plotService = network and network:WaitForChild("PlotService", 5)
-local collectBalanceEvent = findRemote(plotService, "RE", "CollectBalance")
-local levelUpSlotEvent = findRemote(plotService, "RE", "LevelUpSlot")
-local equipBestEvent = findRemote(plotService, "RE", "EquipBest")
-local buyUpgradeEvent = findRemote(network, "RE", "BuyUpgrade")
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PiriyaMenuHub"
+ScreenGui.Parent = CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
--- ค้นหา RemoteEvents ของระบบลูกเต๋า
-local diceShopService = network and network:WaitForChild("DiceShopService", 5)
-local buyDiceEvent = findRemote(diceShopService, "RE", "BuyDice")
-local equipDiceEvent = findRemote(diceShopService, "RE", "EquipDice")
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Name = "ToggleBtn"
+ToggleBtn.Parent = ScreenGui
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+ToggleBtn.Position = UDim2.new(0.05, 0, 0.1, 0)
+ToggleBtn.Size = UDim2.new(0, 130, 0, 42)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.Text = "⛏ Piriya Hub"
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleBtn.TextSize = 14
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 8)
 
--- ค้นหา RemoteEvent ของระบบ Rebirth
-local rebirthServiceComm = network and network:WaitForChild("RebirthService", 5)
-local rebirthEvent = findRemote(rebirthServiceComm, "RE", "Rebirth")
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
+MainFrame.Position = UDim2.new(0.05, 0, 0.18, 0)
+MainFrame.Size = UDim2.new(0, 420, 0, 520)
+MainFrame.Active = true
+MainFrame.Draggable = true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
 
--- ค้นหา RemoteEvent ของระบบขาย (SellService - SellInventory)
-local sellServiceComm = network and network:WaitForChild("SellService", 5)
-local sellInventoryEvent = findRemote(sellServiceComm, "RF", "SellInventory")
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Thickness = 1.5
+MainStroke.Color = Color3.fromRGB(60, 60, 70)
+MainStroke.Parent = MainFrame
 
--- ค้นหา Event แจ้งเตือนสำหรับระบบ Block Notifications
-local notificationService = network and network:WaitForChild("NotificationService", 5)
-local textNotificationRE = findRemote(notificationService, "RE", "TextNotification")
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Parent = MainFrame
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Position = UDim2.new(0, 15, 0, 10)
+TitleLabel.Size = UDim2.new(1, -30, 0, 30)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.Text = "PIRIYA CONTROL PANEL (STANDARD)"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.TextSize = 14
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 
--- ลบ UI เก่าทิ้งก่อน (ถ้ามี)
-local oldGui = CoreGui:FindFirstChild("EpicAFK_Piriya")
-if oldGui then
-    oldGui:Destroy()
-end
+local LeftCol = Instance.new("ScrollingFrame")
+LeftCol.Parent = MainFrame
+LeftCol.BackgroundTransparency = 1
+LeftCol.Position = UDim2.new(0, 12, 0, 45)
+LeftCol.Size = UDim2.new(0, 190, 0, 430)
+LeftCol.CanvasSize = UDim2.new(0, 0, 0, 480)
+LeftCol.ScrollBarThickness = 4
+LeftCol.AutomaticCanvasSize = Enum.AutomaticSize.Y
+local LeftLayout = Instance.new("UIListLayout")
+LeftLayout.Parent = LeftCol
+LeftLayout.SortOrder = Enum.SortOrder.LayoutOrder
+LeftLayout.Padding = UDim.new(0, 8)
 
--- สร้าง ScreenGui หลัก
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "EpicAFK_Piriya"
-screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.DisplayOrder = 10000
+local RightCol = Instance.new("ScrollingFrame")
+RightCol.Parent = MainFrame
+RightCol.BackgroundTransparency = 1
+RightCol.Position = UDim2.new(0, 215, 0, 45)
+RightCol.Size = UDim2.new(0, 192, 0, 430)
+RightCol.CanvasSize = UDim2.new(0, 0, 0, 600)
+RightCol.ScrollBarThickness = 4
+RightCol.AutomaticCanvasSize = Enum.AutomaticSize.Y
+local RightLayout = Instance.new("UIListLayout")
+RightLayout.Parent = RightCol
+RightLayout.SortOrder = Enum.SortOrder.LayoutOrder
+RightLayout.Padding = UDim.new(0, 8)
 
-pcall(function()
-    screenGui.Parent = CoreGui
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Parent = MainFrame
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0, 15, 1, -28)
+StatusLabel.Size = UDim2.new(1, -30, 0, 25)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "Status: Standard Radar Ready"
+StatusLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
+StatusLabel.TextSize = 11
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
 end)
-if not screenGui.Parent then
-    screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+getgenv().AutoDigActive = false
+getgenv().AutoInteractActive = false
+getgenv().DigDelayValue = 0.05
+getgenv().WalkSpeedActive = false
+getgenv().CustomWalkSpeed = 30
+getgenv().ActiveRadarId = nil
+getgenv().AllRadarsActive = false
+getgenv().HighestOnlyActive = false
+getgenv().GiantScanActive = false
+getgenv().MillionScanActive = false
+local savedPosition = nil
+local currentPositionBeforeTp = nil
+
+local function createButton(parent, name, text, color, order)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Parent = parent
+    btn.BackgroundColor3 = color
+    btn.Size = UDim2.new(1, -5, 0, 32)
+    btn.Font = Enum.Font.GothamBold
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 12
+    btn.LayoutOrder = order
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
 end
 
-local blackScreen = Instance.new("TextButton")
-blackScreen.Name = "AFKBlackScreen"
-blackScreen.Size = UDim2.fromScale(1, 1)
-blackScreen.Position = UDim2.fromScale(0, 0)
-blackScreen.BackgroundColor3 = Color3.new(0, 0, 0)
-blackScreen.BorderSizePixel = 0
-blackScreen.Text = ""
-blackScreen.AutoButtonColor = false
-blackScreen.Visible = false
-blackScreen.ZIndex = 100
-blackScreen.Parent = screenGui
+local AutoDigBtn = createButton(LeftCol, "AutoDigBtn", "Auto Dig: OFF", Color3.fromRGB(60, 60, 65), 1)
+local AutoInteractBtn = createButton(LeftCol, "AutoInteractBtn", "⚡ Auto Press E: OFF", Color3.fromRGB(60, 60, 65), 2)
+local WalkSpeedBtn = createButton(LeftCol, "WalkSpeedBtn", "🏃 WalkSpeed: OFF", Color3.fromRGB(60, 60, 65), 3)
 
--- 1. ปุ่มเปิดหน้าต่างแบบย่อ (Floating Open Button)
-local openButton = Instance.new("ImageButton")
-openButton.Size = UDim2.new(0, 44, 0, 44)
-openButton.Position = UDim2.new(0, 20, 0.4, 0)
-openButton.BackgroundColor3 = Color3.fromRGB(60, 52, 137)
-openButton.Image = playerThumbnail
-openButton.Visible = false
-openButton.Active = true
-openButton.Parent = screenGui
+local SpeedBox = Instance.new("TextBox")
+SpeedBox.Parent = LeftCol
+SpeedBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+SpeedBox.Size = UDim2.new(1, -5, 0, 30)
+SpeedBox.Font = Enum.Font.GothamSemibold
+SpeedBox.PlaceholderText = "WalkSpeed Value"
+SpeedBox.Text = "30"
+SpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpeedBox.TextSize = 12
+SpeedBox.LayoutOrder = 4
+Instance.new("UICorner", SpeedBox).CornerRadius = UDim.new(0, 6)
 
-Instance.new("UICorner", openButton).CornerRadius = UDim.new(0, 10)
-local openStroke = Instance.new("UIStroke", openButton)
-openStroke.Color = Color3.fromRGB(250, 199, 117)
-openStroke.Thickness = 2
-
--- กรอบไล่สีหมุนรอบนอก (Frame ภายนอก)
-local outerFrame = Instance.new("Frame")
-outerFrame.Size = UDim2.new(0, 330, 0, 560) -- ขยายความสูงเพิ่มรองรับช่องกรอกข้อความ
-outerFrame.Position = UDim2.new(0.5, -165, 0.1, 0)
-outerFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-outerFrame.BorderSizePixel = 0
-outerFrame.Active = true
-outerFrame.Parent = screenGui
-
-local outerCorner = Instance.new("UICorner")
-outerCorner.CornerRadius = UDim.new(0, 20)
-outerCorner.Parent = outerFrame
-
-local outerGradient = Instance.new("UIGradient")
-outerGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(250, 199, 117)),
-    ColorSequenceKeypoint.new(0.25, Color3.fromRGB(212, 83, 126)),
-    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(127, 119, 221)),
-    ColorSequenceKeypoint.new(0.75, Color3.fromRGB(93, 202, 165)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(250, 199, 117))
-})
-outerGradient.Parent = outerFrame
-
--- เมนูด้านใน (Main Panel)
-local mainPanel = Instance.new("ScrollingFrame")
-mainPanel.Size = UDim2.new(1, -6, 1, -6)
-mainPanel.Position = UDim2.new(0, 3, 0, 3)
-mainPanel.BackgroundColor3 = Color3.fromRGB(17, 14, 28)
-mainPanel.BorderSizePixel = 0
-mainPanel.CanvasSize = UDim2.new(0, 0, 0, 1280)
-mainPanel.ScrollBarThickness = 4
-mainPanel.Parent = outerFrame
-
-local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0, 17)
-panelCorner.Parent = mainPanel
-
--- ส่วนหัว (Header)
-local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 156)
-header.BackgroundColor3 = Color3.fromRGB(60, 52, 137)
-header.BorderSizePixel = 0
-header.ClipsDescendants = true
-header.Parent = mainPanel
-
-local headerGradient = Instance.new("UIGradient", header)
-headerGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(60, 52, 137)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(17, 14, 28))
-})
-
-for index = 1, 12 do
-    local ray = Instance.new("Frame")
-    ray.AnchorPoint = Vector2.new(0.5, 0.5)
-    ray.Position = UDim2.new(0.5, 0, 0.5, 0)
-    ray.Size = UDim2.new(0, 2, 0, 168)
-    ray.Rotation = (index - 1) * 30
-    ray.BackgroundColor3 = Color3.fromRGB(206, 203, 246)
-    ray.BackgroundTransparency = 0.88
-    ray.BorderSizePixel = 0
-    ray.ZIndex = 1
-    ray.Parent = header
-end
-
-local TweenService = game:GetService("TweenService")
-local sparklePositions = {
-    UDim2.new(0, 34, 0, 24),
-    UDim2.new(0, 72, 0, 102),
-    UDim2.new(1, -48, 0, 28),
-    UDim2.new(1, -80, 0, 106),
-    UDim2.new(0, 112, 0, 12)
-}
-for index, position in ipairs(sparklePositions) do
-    local sparkle = Instance.new("TextLabel")
-    sparkle.Size = UDim2.new(0, 20, 0, 20)
-    sparkle.Position = position
-    sparkle.BackgroundTransparency = 1
-    sparkle.Font = Enum.Font.GothamBold
-    sparkle.Text = index == 5 and "*" or "+"
-    sparkle.TextColor3 = Color3.fromRGB(250, 199, 117)
-    sparkle.TextSize = index % 2 == 0 and 13 or 17
-    sparkle.TextTransparency = 0.2
-    sparkle.ZIndex = 2
-    sparkle.Parent = header
-    TweenService:Create(
-        sparkle,
-        TweenInfo.new(1.4 + index * 0.12, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-        { TextTransparency = 0.8 }
-    ):Play()
-end
-
--- ระบบลากหน้าต่างด้วย Header
-local dragging, dragInput, dragStart, startPos
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = outerFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
+SpeedBox.FocusLost:Connect(function()
+    local num = tonumber(SpeedBox.Text)
+    if num and num > 0 then
+        getgenv().CustomWalkSpeed = num
+    else
+        SpeedBox.Text = tostring(getgenv().CustomWalkSpeed)
     end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        outerFrame.Position = UDim2.new(
-            startPos.X.Scale, 
-            startPos.X.Offset + delta.X, 
-            startPos.Y.Scale, 
-            startPos.Y.Offset + delta.Y
-        )
+local DelayBox = Instance.new("TextBox")
+DelayBox.Parent = LeftCol
+DelayBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+DelayBox.Size = UDim2.new(1, -5, 0, 30)
+DelayBox.Font = Enum.Font.GothamSemibold
+DelayBox.PlaceholderText = "Dig Delay"
+DelayBox.Text = "0.05"
+DelayBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+DelayBox.TextSize = 12
+DelayBox.LayoutOrder = 5
+Instance.new("UICorner", DelayBox).CornerRadius = UDim.new(0, 6)
+
+DelayBox.FocusLost:Connect(function()
+    local num = tonumber(DelayBox.Text)
+    if num and num > 0 then getgenv().DigDelayValue = num else DelayBox.Text = tostring(getgenv().DigDelayValue) end
+end)
+
+AutoDigBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoDigActive = not getgenv().AutoDigActive
+    if getgenv().AutoDigActive then
+        AutoDigBtn.Text = "Auto Dig: ON"
+        AutoDigBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 60)
+    else
+        AutoDigBtn.Text = "Auto Dig: OFF"
+        AutoDigBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
     end
 end)
 
--- ปุ่มปิด (X Button)
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 28, 0, 28)
-closeBtn.Position = UDim2.new(1, -35, 0, 10)
-closeBtn.BackgroundColor3 = Color3.fromRGB(212, 83, 126)
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
-closeBtn.Parent = header
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
-
-local afkButton = Instance.new("TextButton")
-afkButton.Size = UDim2.new(0, 68, 0, 28)
-afkButton.Position = UDim2.new(1, -110, 0, 10)
-afkButton.BackgroundColor3 = Color3.fromRGB(60, 58, 75)
-afkButton.Text = "AFK"
-afkButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-afkButton.Font = Enum.Font.GothamBold
-afkButton.TextSize = 12
-afkButton.Parent = header
-Instance.new("UICorner", afkButton).CornerRadius = UDim.new(0, 6)
-
-afkButton.MouseButton1Click:Connect(function()
-    blackScreen.Visible = true
-    afkButton.Text = "AFK ON"
+AutoInteractBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoInteractActive = not getgenv().AutoInteractActive
+    if getgenv().AutoInteractActive then
+        AutoInteractBtn.Text = "⚡ Auto Press E: ON"
+        AutoInteractBtn.BackgroundColor3 = Color3.fromRGB(180, 110, 20)
+    else
+        AutoInteractBtn.Text = "⚡ Auto Press E: OFF"
+        AutoInteractBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+    end
 end)
 
-blackScreen.MouseButton1Click:Connect(function()
-    blackScreen.Visible = false
-    afkButton.Text = "AFK"
+WalkSpeedBtn.MouseButton1Click:Connect(function()
+    getgenv().WalkSpeedActive = not getgenv().WalkSpeedActive
+    if getgenv().WalkSpeedActive then
+        WalkSpeedBtn.Text = "🏃 WalkSpeed: ON"
+        WalkSpeedBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 160)
+    else
+        WalkSpeedBtn.Text = "🏃 WalkSpeed: OFF"
+        WalkSpeedBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+    end
 end)
 
-closeBtn.MouseButton1Click:Connect(function()
-    outerFrame.Visible = false
-    openButton.Visible = true
+createButton(LeftCol, "SellAllBtn", "💰 Sell All Items", Color3.fromRGB(160, 90, 30), 6).MouseButton1Click:Connect(function()
+    pcall(function() ReplicatedStorage:FindFirstChild("RequestSell", true):FireServer("All") end)
+end)
+createButton(LeftCol, "UpgradeBagBtn", "🎒 Max Carry", Color3.fromRGB(40, 100, 160), 7).MouseButton1Click:Connect(function()
+    pcall(function() ReplicatedStorage:FindFirstChild("BuyUpgrade", true):FireServer("carry", "max") end)
+end)
+createButton(LeftCol, "UpgradeWarmthBtn", "🔥 Max Warmth", Color3.fromRGB(160, 50, 50), 8).MouseButton1Click:Connect(function()
+    pcall(function() ReplicatedStorage:FindFirstChild("BuyUpgrade", true):FireServer("warmth", "max") end)
+end)
+createButton(LeftCol, "SetTpBtn", "📍 Set TP Pos", Color3.fromRGB(70, 70, 140), 9).MouseButton1Click:Connect(function()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            savedPosition = char.HumanoidRootPart.CFrame
+            StatusLabel.Text = "Status: TP Position Saved!"
+        end
+    end)
+end)
+createButton(LeftCol, "TpToggleBtn", "🚀 Teleport Toggle", Color3.fromRGB(90, 50, 140), 10).MouseButton1Click:Connect(function()
+    pcall(function()
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp or not savedPosition then return end
+        if not currentPositionBeforeTp then
+            currentPositionBeforeTp = hrp.CFrame
+            hrp.CFrame = savedPosition
+        else
+            hrp.CFrame = currentPositionBeforeTp
+            currentPositionBeforeTp = nil
+        end
+    end)
 end)
 
-openButton.MouseButton1Click:Connect(function()
-    outerFrame.Visible = true
-    openButton.Visible = false
-end)
-
-local avatar = Instance.new("ImageLabel")
-avatar.Size = UDim2.new(0, 96, 0, 96)
-avatar.Position = UDim2.new(0.5, -48, 0, 30)
-avatar.BackgroundTransparency = 1
-avatar.Image = playerThumbnail
-avatar.ZIndex = 3
-avatar.Parent = header
-Instance.new("UICorner", avatar).CornerRadius = UDim.new(1, 0)
-
-local crown = Instance.new("TextLabel")
-crown.Size = UDim2.new(0, 34, 0, 30)
-crown.Position = UDim2.new(0.5, -17, 0, 2)
-crown.BackgroundTransparency = 1
-crown.Font = Enum.Font.GothamBold
-crown.Text = "♛"
-crown.TextColor3 = Color3.fromRGB(250, 199, 117)
-crown.TextSize = 27
-crown.Rotation = -12
-crown.ZIndex = 4
-crown.Parent = header
-
-local ring = Instance.new("UIStroke", avatar)
-ring.Thickness = 3
-ring.Color = Color3.new(1, 1, 1)
-local ringGrad = Instance.new("UIGradient", ring)
-ringGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 220, 120)),
-    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(210, 80, 130)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 220, 120)),
-})
-
-RunService.RenderStepped:Connect(function(dt)
-    ringGrad.Rotation = (ringGrad.Rotation + 120 * dt) % 360
-    outerGradient.Rotation = (outerGradient.Rotation + 60 * dt) % 360
-end)
-
-local titleContainer = Instance.new("Frame")
-titleContainer.Size = UDim2.new(1, 0, 0, 64)
-titleContainer.Position = UDim2.new(0, 0, 0, 158)
-titleContainer.BackgroundTransparency = 1
-titleContainer.Parent = mainPanel
-
-local nameLabel = Instance.new("TextLabel")
-nameLabel.Size = UDim2.new(1, 0, 0, 36)
-nameLabel.BackgroundTransparency = 1
-nameLabel.Font = Enum.Font.GothamBold
-nameLabel.Text = playerName
-nameLabel.TextColor3 = Color3.fromRGB(250, 199, 117)
-nameLabel.TextSize = 26
-nameLabel.Parent = titleContainer
-local nameGradient = Instance.new("UIGradient", nameLabel)
-nameGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 243, 196)),
-    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(250, 199, 117)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(186, 117, 23))
-})
-
-local subLabel = Instance.new("TextLabel")
-subLabel.Size = UDim2.new(1, 0, 0, 20)
-subLabel.Position = UDim2.new(0, 0, 0, 37)
-subLabel.BackgroundTransparency = 1
-subLabel.Font = Enum.Font.GothamMedium
-subLabel.Text = "AFK MASTER  |  CUSTOM SMART SELL"
-subLabel.TextColor3 = Color3.fromRGB(206, 203, 246)
-subLabel.TextSize = 12
-subLabel.Parent = titleContainer
-
-local statsContainer = Instance.new("Frame")
-statsContainer.Size = UDim2.new(1, -24, 0, 72)
-statsContainer.Position = UDim2.new(0, 12, 0, 226)
-statsContainer.BackgroundTransparency = 1
-statsContainer.Parent = mainPanel
-
-local statsLayout = Instance.new("UIListLayout")
-statsLayout.FillDirection = Enum.FillDirection.Horizontal
-statsLayout.SortOrder = Enum.SortOrder.LayoutOrder
-statsLayout.Padding = UDim.new(0, 6)
-statsLayout.Parent = statsContainer
-
-local function createProfileStat(order, title, value)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1 / 3, -4, 1, 0)
-    card.BackgroundColor3 = Color3.fromRGB(28, 24, 48)
-    card.BorderSizePixel = 0
-    card.LayoutOrder = order
-    card.Parent = statsContainer
-    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
-    Instance.new("UIStroke", card).Color = Color3.fromRGB(60, 52, 137)
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(1, -8, 0, 18)
-    titleLabel.Position = UDim2.new(0, 4, 0, 7)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Font = Enum.Font.Gotham
-    titleLabel.Text = title
-    titleLabel.TextColor3 = Color3.fromRGB(175, 169, 236)
-    titleLabel.TextSize = 9
-    titleLabel.Parent = card
-
-    local valueLabel = Instance.new("TextLabel")
-    valueLabel.Size = UDim2.new(1, -8, 0, 24)
-    valueLabel.Position = UDim2.new(0, 4, 0, 31)
-    valueLabel.BackgroundTransparency = 1
-    valueLabel.Font = Enum.Font.GothamBold
-    valueLabel.Text = value
-    valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    valueLabel.TextSize = 13
-    valueLabel.TextTruncate = Enum.TextTruncate.AtEnd
-    valueLabel.Parent = card
-    return valueLabel
-end
-
-local activeStatValue = createProfileStat(1, "ACTIVE", "0/8")
-local profileStatValue = createProfileStat(2, "CONFIGS", "0")
-local thresholdStatValue = createProfileStat(3, "SELL MIN", "1.5qd")
-
-local automationProgress = Instance.new("Frame")
-automationProgress.Size = UDim2.new(1, -24, 0, 42)
-automationProgress.Position = UDim2.new(0, 12, 0, 306)
-automationProgress.BackgroundTransparency = 1
-automationProgress.Parent = mainPanel
-
-local progressTitle = Instance.new("TextLabel")
-progressTitle.Size = UDim2.new(0.65, 0, 0, 16)
-progressTitle.BackgroundTransparency = 1
-progressTitle.Font = Enum.Font.GothamBold
-progressTitle.Text = "ACTIVE AUTOMATIONS"
-progressTitle.TextColor3 = Color3.fromRGB(175, 169, 236)
-progressTitle.TextSize = 10
-progressTitle.TextXAlignment = Enum.TextXAlignment.Left
-progressTitle.Parent = automationProgress
-
-local progressCount = Instance.new("TextLabel")
-progressCount.Size = UDim2.new(0.35, 0, 0, 16)
-progressCount.Position = UDim2.new(0.65, 0, 0, 0)
-progressCount.BackgroundTransparency = 1
-progressCount.Font = Enum.Font.Gotham
-progressCount.Text = "0 / 8"
-progressCount.TextColor3 = Color3.fromRGB(230, 230, 230)
-progressCount.TextSize = 10
-progressCount.TextXAlignment = Enum.TextXAlignment.Right
-progressCount.Parent = automationProgress
-
-local progressTrack = Instance.new("Frame")
-progressTrack.Size = UDim2.new(1, 0, 0, 9)
-progressTrack.Position = UDim2.new(0, 0, 0, 22)
-progressTrack.BackgroundColor3 = Color3.fromRGB(28, 24, 48)
-progressTrack.BorderSizePixel = 0
-progressTrack.ClipsDescendants = true
-progressTrack.Parent = automationProgress
-Instance.new("UICorner", progressTrack).CornerRadius = UDim.new(0, 5)
-
-local progressFill = Instance.new("Frame")
-progressFill.Size = UDim2.new(0, 0, 1, 0)
-progressFill.BackgroundColor3 = Color3.fromRGB(212, 83, 126)
-progressFill.BorderSizePixel = 0
-progressFill.Parent = progressTrack
-Instance.new("UICorner", progressFill).CornerRadius = UDim.new(0, 5)
-local progressGradient = Instance.new("UIGradient", progressFill)
-progressGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(212, 83, 126)),
-    ColorSequenceKeypoint.new(0.55, Color3.fromRGB(127, 119, 221)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(93, 202, 165))
-})
-
--- ช่องกรอกค่าขีดจำกัดเงินขั้นต่ำสำหรับการขาย (Custom Threshold Input)
-local thresholdContainer = Instance.new("Frame")
-thresholdContainer.Size = UDim2.new(1, -24, 0, 90)
-thresholdContainer.Position = UDim2.new(0, 12, 0, 360)
-thresholdContainer.BackgroundColor3 = Color3.fromRGB(28, 24, 48)
-thresholdContainer.BorderSizePixel = 0
-thresholdContainer.Parent = mainPanel
-Instance.new("UICorner", thresholdContainer).CornerRadius = UDim.new(0, 10)
-
-local thresholdLabel = Instance.new("TextLabel")
-thresholdLabel.Size = UDim2.new(0.6, 0, 0, 38)
-thresholdLabel.Position = UDim2.new(0, 12, 0, 0)
-thresholdLabel.BackgroundTransparency = 1
-thresholdLabel.Font = Enum.Font.GothamBold
-thresholdLabel.Text = "Min Sell Income (เช่น 1.5qd)"
-thresholdLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-thresholdLabel.TextSize = 11
-thresholdLabel.TextXAlignment = Enum.TextXAlignment.Left
-thresholdLabel.Parent = thresholdContainer
-
-local thresholdBox = Instance.new("TextBox")
-thresholdBox.Size = UDim2.new(0, 90, 0, 30)
-thresholdBox.Position = UDim2.new(1, -102, 0, 4)
-thresholdBox.BackgroundColor3 = Color3.fromRGB(45, 38, 72)
-thresholdBox.TextColor3 = Color3.fromRGB(250, 199, 117)
-thresholdBox.Font = Enum.Font.GothamBold
-thresholdBox.TextSize = 13
-thresholdBox.Text = "1.5qd" -- ค่าเริ่มต้น
-thresholdBox.ClearTextOnFocus = false
-thresholdBox.Parent = thresholdContainer
-Instance.new("UICorner", thresholdBox).CornerRadius = UDim.new(0, 6)
-
-local webhookLabel = Instance.new("TextLabel")
-webhookLabel.Size = UDim2.new(0, 64, 0, 30)
-webhookLabel.Position = UDim2.new(0, 8, 0, 50)
-webhookLabel.BackgroundTransparency = 1
-webhookLabel.Font = Enum.Font.GothamBold
-webhookLabel.Text = "Webhook"
-webhookLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-webhookLabel.TextSize = 10
-webhookLabel.TextXAlignment = Enum.TextXAlignment.Left
-webhookLabel.Parent = thresholdContainer
-
-local webhookBox = Instance.new("TextBox")
-webhookBox.Size = UDim2.new(1, -152, 0, 30)
-webhookBox.Position = UDim2.new(0, 74, 0, 50)
-webhookBox.BackgroundColor3 = Color3.fromRGB(45, 38, 72)
-webhookBox.TextColor3 = Color3.fromRGB(250, 199, 117)
-webhookBox.PlaceholderColor3 = Color3.fromRGB(160, 160, 160)
-webhookBox.PlaceholderText = "Paste Discord URL"
-webhookBox.Font = Enum.Font.Gotham
-webhookBox.TextSize = 10
-webhookBox.Text = ""
-webhookBox.ClearTextOnFocus = false
-webhookBox.TextXAlignment = Enum.TextXAlignment.Left
-webhookBox.Parent = thresholdContainer
-Instance.new("UICorner", webhookBox).CornerRadius = UDim.new(0, 6)
-
-local webhookSaveButton = Instance.new("TextButton")
-webhookSaveButton.Size = UDim2.new(0, 64, 0, 30)
-webhookSaveButton.Position = UDim2.new(1, -72, 0, 50)
-webhookSaveButton.BackgroundColor3 = Color3.fromRGB(60, 52, 137)
-webhookSaveButton.Text = "Save"
-webhookSaveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-webhookSaveButton.Font = Enum.Font.GothamBold
-webhookSaveButton.TextSize = 11
-webhookSaveButton.Parent = thresholdContainer
-Instance.new("UICorner", webhookSaveButton).CornerRadius = UDim.new(0, 6)
-
-local togglesContainer = Instance.new("Frame")
-togglesContainer.Size = UDim2.new(1, -24, 0, 440)
-togglesContainer.Position = UDim2.new(0, 12, 0, 464)
-togglesContainer.BackgroundTransparency = 1
-togglesContainer.Parent = mainPanel
-
-local uiList = Instance.new("UIListLayout")
-uiList.SortOrder = Enum.SortOrder.LayoutOrder
-uiList.Padding = UDim.new(0, 8)
-uiList.Parent = togglesContainer
-
-local states = {
-    collect = true,
-    upgradeTree = true,
-    levelUnit = true,
-    equipBest = true,
-    dice = true,
-    autoRebirth = true,
-    smartSell = true,
-    blockNotif = true
+local RadarData = {
+    RARITY_ORDER = {
+        Common = 1,
+        Uncommon = 2,
+        Rare = 3,
+        Epic = 4,
+        Legendary = 5,
+        Mythic = 6,
+        Exotic = 7,
+        Zenith = 8,
+        Meteor = 9,
+    },
+    RARITY_COLOR = {
+        Common = Color3.fromRGB(180, 180, 180),
+        Uncommon = Color3.fromRGB(90, 220, 120),
+        Rare = Color3.fromRGB(95, 150, 255),
+        Epic = Color3.fromRGB(175, 90, 255),
+        Legendary = Color3.fromRGB(255, 160, 70),
+        Mythic = Color3.fromRGB(255, 75, 110),
+        Exotic = Color3.fromRGB(255, 200, 70),
+        Zenith = Color3.fromRGB(255, 255, 120),
+        Meteor = Color3.fromRGB(255, 120, 50),
+    },
+    ById = {
+        CommonRadar = { displayName = "Common Radar", radius = 100 },
+        UncommonRadar = { displayName = "Uncommon Radar", radius = 150 },
+        RareRadar = { displayName = "Rare Radar", radius = 200 },
+        EpicRadar = { displayName = "Epic Radar", radius = 250 },
+        LegendaryRadar = { displayName = "Legendary Radar", radius = 300 },
+        MythicRadar = { displayName = "Mythic Radar", radius = 350 },
+        ExoticRadar = { displayName = "Exotic Radar", radius = 400 },
+        ZenithRadar = { displayName = "Zenith Radar", radius = 500 },
+        MeteorRadar = { displayName = "Meteor Radar", radius = 600 },
+    },
 }
 
-local toggleControls = {}
-local function refreshToggleVisuals()
-    for stateKey, controls in pairs(toggleControls) do
-        local isActive = states[stateKey]
-        controls.button.BackgroundColor3 = isActive and Color3.fromRGB(127, 119, 221) or Color3.fromRGB(60, 58, 75)
-        controls.knob.Position = isActive and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
-    end
+local WHITE = Color3.new(1, 1, 1)
+local BLACK = Color3.new(0, 0, 0)
+local SCOPE_GREEN = Color3.fromRGB(90, 230, 130)
+
+local function hex(c)
+    return string.format("#%02X%02X%02X", math.floor((c.R*255)+0.5), math.floor((c.G*255)+0.5), math.floor((c.B*255)+0.5))
+end
+local function studs(v) return string.format("%d studs", math.floor(v + 0.5)) end
+
+local radarHudPanel = Instance.new("Frame")
+radarHudPanel.Name = "RadarHudPanel"
+radarHudPanel.Position = UDim2.new(0, 14, 0.45, 0)
+radarHudPanel.Size = UDim2.fromOffset(350, 118)
+radarHudPanel.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+radarHudPanel.BackgroundTransparency = 0.12
+radarHudPanel.Visible = false
+radarHudPanel.Parent = ScreenGui
+Instance.new("UICorner", radarHudPanel).CornerRadius = UDim.new(0, 14)
+local radarPanelStroke = Instance.new("UIStroke")
+radarPanelStroke.Thickness = 2
+radarPanelStroke.Color = BLACK
+radarPanelStroke.Parent = radarHudPanel
+
+local scopeFrame = Instance.new("Frame")
+scopeFrame.Name = "Scope"
+scopeFrame.Position = UDim2.fromOffset(10, 10)
+scopeFrame.Size = UDim2.fromOffset(98, 98)
+scopeFrame.BackgroundColor3 = Color3.fromRGB(8, 36, 22)
+scopeFrame.ClipsDescendants = true
+scopeFrame.Parent = radarHudPanel
+Instance.new("UICorner", scopeFrame).CornerRadius = UDim.new(1, 0)
+local scopeStroke = Instance.new("UIStroke")
+scopeStroke.Thickness = 2
+scopeStroke.Color = SCOPE_GREEN
+scopeStroke.Parent = scopeFrame
+
+for _, sVal in ipairs({0.66, 0.33}) do
+    local ring = Instance.new("Frame")
+    ring.AnchorPoint = Vector2.new(0.5, 0.5)
+    ring.Position = UDim2.fromScale(0.5, 0.5)
+    ring.Size = UDim2.fromScale(sVal, sVal)
+    ring.BackgroundTransparency = 1
+    ring.Parent = scopeFrame
+    Instance.new("UICorner", ring).CornerRadius = UDim.new(1, 0)
+    local rs = Instance.new("UIStroke")
+    rs.Thickness = 1
+    rs.Color = SCOPE_GREEN
+    rs.Transparency = 0.65
+    rs.Parent = ring
 end
 
-local HttpService = game:GetService("HttpService")
-local DISCORD_WEBHOOK_URL = ""
-local WEBHOOK_INTERVAL_SECONDS = 10
-local function isValidDiscordWebhook(url)
-    return url == ""
-        or string.match(url, "^https://discord%.com/api/webhooks/") ~= nil
-        or string.match(url, "^https://discordapp%.com/api/webhooks/") ~= nil
+local scopeMask = Instance.new("Frame")
+scopeMask.BackgroundTransparency = 1
+scopeMask.Size = UDim2.fromScale(1, 1)
+scopeMask.ZIndex = 4
+scopeMask.Parent = scopeFrame
+
+local scopeDot = Instance.new("Frame")
+scopeDot.AnchorPoint = Vector2.new(0.5, 0.5)
+scopeDot.Position = UDim2.fromScale(0.5, 0.5)
+scopeDot.Size = UDim2.fromOffset(8, 8)
+scopeDot.BackgroundColor3 = WHITE
+scopeDot.ZIndex = 6
+scopeDot.Parent = scopeFrame
+Instance.new("UICorner", scopeDot).CornerRadius = UDim.new(1, 0)
+
+local function createRadarLabel(name, yOffset, height, fontSize, bold)
+    local label = Instance.new("TextLabel")
+    label.Name = name
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.fromOffset(118, yOffset)
+    label.Size = UDim2.new(1, -128, 0, height)
+    label.Font = bold and Enum.Font.FredokaOne or Enum.Font.GothamBold
+    label.TextSize = fontSize
+    label.TextColor3 = WHITE
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextStrokeTransparency = 0.5
+    label.RichText = true
+    label.Parent = radarHudPanel
+    return label
 end
 
-local webhookRequest = request or http_request
-if type(webhookRequest) ~= "function" and type(syn) == "table" then
-    webhookRequest = syn.request
-end
-if type(webhookRequest) ~= "function" and type(http) == "table" then
-    webhookRequest = http.request
-end
+local radarTitle = createRadarLabel("Title", 8, 28, 22, true)
+local radarLine1 = createRadarLabel("Line1", 38, 22, 15, false)
+local radarLine2 = createRadarLabel("Line2", 60, 20, 13, false)
+radarLine2.TextColor3 = Color3.fromRGB(200, 205, 215)
 
-local webhookEvents = {}
-local function queueWebhookEvent(description)
-    if DISCORD_WEBHOOK_URL == "" or type(webhookRequest) ~= "function" then return end
-    description = string.sub(tostring(description), 1, 120)
-    webhookEvents[description] = (webhookEvents[description] or 0) + 1
-end
+local radarState = nil
 
-task.spawn(function()
-    while true do
-        task.wait(WEBHOOK_INTERVAL_SECONDS)
-        if next(webhookEvents) then
-            local pendingEvents = webhookEvents
-            webhookEvents = {}
-            local lines = {}
-            for description, count in pairs(pendingEvents) do
-                table.insert(lines, string.format("- %s (x%d)", description, count))
-            end
-            table.sort(lines)
+local function worldBlip(adornee, color, textLabel)
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "RadarDot"
+    gui.AlwaysOnTop = true
+    gui.Size = UDim2.fromOffset(150, 44)
+    gui.StudsOffsetWorldSpace = Vector3.new(0, 2.2, 0)
+    gui.Adornee = adornee
+    gui.MaxDistance = 1500
+    gui.Parent = adornee
 
-            local content = "AFK activity (last " .. WEBHOOK_INTERVAL_SECONDS .. "s):\n" .. table.concat(lines, "\n")
-            if #content > 1900 then
-                content = string.sub(content, 1, 1870) .. "\n..."
-            end
+    local dot = Instance.new("Frame")
+    dot.AnchorPoint = Vector2.new(0.5, 0)
+    dot.Position = UDim2.fromScale(0.5, 0)
+    dot.Size = UDim2.fromOffset(12, 12)
+    dot.BackgroundColor3 = color
+    dot.Parent = gui
+    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.5
+    stroke.Color = BLACK
+    stroke.Parent = dot
 
-            local ok, response = pcall(webhookRequest, {
-                Url = DISCORD_WEBHOOK_URL,
-                Method = "POST",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body = HttpService:JSONEncode({ content = content })
-            })
-            if not ok then
-                warn("Discord webhook request failed")
-            elseif type(response) == "table" and response.StatusCode and response.StatusCode >= 400 then
-                warn("Discord webhook returned HTTP " .. tostring(response.StatusCode))
-            end
-        end
-    end
-end)
-
-local CONFIG_FILE = "EpicAFK_Piriya_config.json"
-
-local function saveSettings()
-    if type(writefile) ~= "function" then return false end
-
-    local savedStates = {}
-    for key, value in pairs(states) do
-        savedStates[key] = value
-    end
-
-    local ok, encoded = pcall(function()
-        return HttpService:JSONEncode({
-            states = savedStates,
-            threshold = thresholdBox.Text,
-            webhookUrl = webhookBox.Text
-        })
-    end)
-    if not ok then return false end
-    local writeOk, result = pcall(writefile, CONFIG_FILE, encoded)
-    return writeOk and result ~= false
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 0, 0, 14)
+    label.Size = UDim2.new(1, 0, 0, 20)
+    label.Font = Enum.Font.FredokaOne
+    label.TextSize = 12
+    label.TextColor3 = WHITE
+    label.TextStrokeTransparency = 0
+    label.RichText = true
+    label.Text = textLabel
+    label.Parent = gui
+    return { bb = gui, dot = dot, label = label }
 end
 
-local function loadSettings()
-    if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
-
-    local fileOk, fileExists = pcall(isfile, CONFIG_FILE)
-    if not fileOk or not fileExists then return end
-
-    local readOk, contents = pcall(readfile, CONFIG_FILE)
-    if not readOk then return end
-
-    local decodeOk, config = pcall(function()
-        return HttpService:JSONDecode(contents)
-    end)
-    if not decodeOk or type(config) ~= "table" then return end
-
-    if type(config.states) == "table" then
-        for key in pairs(states) do
-            if type(config.states[key]) == "boolean" then
-                states[key] = config.states[key]
-            end
-        end
-    end
-
-    if type(config.threshold) == "string" then
-        thresholdBox.Text = config.threshold
-    end
-    if type(config.webhookUrl) == "string" and isValidDiscordWebhook(config.webhookUrl) then
-        webhookBox.Text = config.webhookUrl
-        DISCORD_WEBHOOK_URL = config.webhookUrl
-    end
-end
-
-local CONFIG_STORE_FILE = "EpicAFK_Piriya_configs.json"
-local function captureSettings()
-    local savedStates = {}
-    for key, value in pairs(states) do
-        savedStates[key] = value
-    end
-    return { states = savedStates, threshold = thresholdBox.Text }
-end
-
-local function applySettings(config)
-    if type(config) ~= "table" then return false end
-    if type(config.states) == "table" then
-        for key in pairs(states) do
-            if type(config.states[key]) == "boolean" then
-                states[key] = config.states[key]
-            end
-        end
-    end
-    if type(config.threshold) == "string" then
-        thresholdBox.Text = config.threshold
-    end
-    refreshToggleVisuals()
-    return true
-end
-
-local function loadConfigStore()
-    local store = { profiles = {}, loadOnStart = nil }
-    if type(isfile) ~= "function" or type(readfile) ~= "function" then return store end
-
-    local existsOk, exists = pcall(isfile, CONFIG_STORE_FILE)
-    if not existsOk or not exists then return store end
-    local readOk, contents = pcall(readfile, CONFIG_STORE_FILE)
-    if not readOk then return store end
-    local decodeOk, decoded = pcall(function()
-        return HttpService:JSONDecode(contents)
-    end)
-    if not decodeOk or type(decoded) ~= "table" then return store end
-
-    if type(decoded.profiles) == "table" then
-        store.profiles = decoded.profiles
-    end
-    if type(decoded.loadOnStart) == "string" and type(store.profiles[decoded.loadOnStart]) == "table" then
-        store.loadOnStart = decoded.loadOnStart
-    end
-    return store
-end
-
-local configStore
-local function saveConfigStore()
-    if type(writefile) ~= "function" then return false end
-    local encodeOk, encoded = pcall(function()
-        return HttpService:JSONEncode(configStore)
-    end)
-    if not encodeOk then return false end
-    return pcall(writefile, CONFIG_STORE_FILE, encoded)
-end
-
-loadSettings()
-webhookSaveButton.MouseButton1Click:Connect(function()
-    local url = string.gsub(webhookBox.Text, "^%s*(.-)%s*$", "%1")
-    if not isValidDiscordWebhook(url) then
-        webhookSaveButton.Text = "Invalid URL"
-        return
-    end
-
-    webhookBox.Text = url
-    DISCORD_WEBHOOK_URL = url
-    local isSaved = saveSettings()
-    if url == "" then
-        webhookSaveButton.Text = isSaved and "Cleared" or "Runtime"
-    elseif type(webhookRequest) ~= "function" then
-        webhookSaveButton.Text = "No HTTP"
-    else
-        webhookSaveButton.Text = isSaved and "Saved" or "Runtime"
-        queueWebhookEvent("Webhook configured")
-    end
-end)
-webhookBox:GetPropertyChangedSignal("Text"):Connect(function()
-    webhookSaveButton.Text = "Save"
-end)
-queueWebhookEvent("Script started")
-if DISCORD_WEBHOOK_URL ~= "" and type(webhookRequest) ~= "function" then
-    warn("Discord webhook unavailable: executor HTTP request API not found")
-end
-
-configStore = loadConfigStore()
-local selectedConfig = configStore.loadOnStart
-if selectedConfig then
-    applySettings(configStore.profiles[selectedConfig])
-end
-saveSettings()
-thresholdBox.FocusLost:Connect(saveSettings)
-
-local function updateProfileStats()
-    local enabledCount = 0
-    local totalCount = 0
-    local profileCount = 0
-    for _, enabled in pairs(states) do
-        totalCount = totalCount + 1
-        if enabled then
-            enabledCount = enabledCount + 1
-        end
-    end
-    for _ in pairs(configStore.profiles) do
-        profileCount = profileCount + 1
-    end
-
-    activeStatValue.Text = tostring(enabledCount) .. "/" .. tostring(totalCount)
-    profileStatValue.Text = tostring(profileCount)
-    thresholdStatValue.Text = thresholdBox.Text
-    progressCount.Text = tostring(enabledCount) .. " / " .. tostring(totalCount)
-    progressFill.Size = UDim2.new(totalCount > 0 and enabledCount / totalCount or 0, 0, 1, 0)
-end
-
-updateProfileStats()
-thresholdBox.FocusLost:Connect(updateProfileStats)
-
-local featureIcons = {
-    collect = "¢",
-    upgradeTree = "↗",
-    levelUnit = "↑",
-    equipBest = "★",
-    dice = "◇",
-    autoRebirth = "↻",
-    smartSell = "⇄",
-    blockNotif = "◉"
-}
-
-local function createFeatureToggle(order, title, desc, stateKey)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 48)
-    row.BackgroundColor3 = Color3.fromRGB(28, 24, 48)
-    row.BorderSizePixel = 0
-    row.LayoutOrder = order
-    row.Parent = togglesContainer
-
-    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 10)
-    local rowStroke = Instance.new("UIStroke", row)
-    rowStroke.Color = Color3.fromRGB(60, 52, 137)
-    rowStroke.Thickness = 0.5
-    rowStroke.Transparency = 0.3
-
-    local iconFrame = Instance.new("Frame")
-    iconFrame.Size = UDim2.new(0, 30, 0, 30)
-    iconFrame.Position = UDim2.new(0, 8, 0.5, -15)
-    iconFrame.BackgroundColor3 = Color3.fromRGB(38, 33, 92)
-    iconFrame.BorderSizePixel = 0
-    iconFrame.Parent = row
-    Instance.new("UICorner", iconFrame).CornerRadius = UDim.new(0, 8)
-
-    local iconLabel = Instance.new("TextLabel")
-    iconLabel.Size = UDim2.new(1, 0, 1, 0)
-    iconLabel.BackgroundTransparency = 1
-    iconLabel.Font = Enum.Font.GothamBold
-    iconLabel.Text = featureIcons[stateKey] or "*"
-    iconLabel.TextColor3 = Color3.fromRGB(175, 169, 236)
-    iconLabel.TextSize = 16
-    iconLabel.Parent = iconFrame
-
-    local textHolder = Instance.new("Frame")
-    textHolder.Size = UDim2.new(1, -112, 1, 0)
-    textHolder.Position = UDim2.new(0, 48, 0, 0)
-    textHolder.BackgroundTransparency = 1
-    textHolder.Parent = row
-
-    local tLabel = Instance.new("TextLabel")
-    tLabel.Size = UDim2.new(1, 0, 0, 20)
-    tLabel.Position = UDim2.new(0, 0, 0, 4)
-    tLabel.BackgroundTransparency = 1
-    tLabel.Font = Enum.Font.GothamBold
-    tLabel.Text = title
-    tLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    tLabel.TextSize = 13
-    tLabel.TextTruncate = Enum.TextTruncate.AtEnd
-    tLabel.TextXAlignment = Enum.TextXAlignment.Left
-    tLabel.Parent = textHolder
-
-    local dLabel = Instance.new("TextLabel")
-    dLabel.Size = UDim2.new(1, 0, 0, 16)
-    dLabel.Position = UDim2.new(0, 0, 0, 25)
-    dLabel.BackgroundTransparency = 1
-    dLabel.Font = Enum.Font.Gotham
-    dLabel.Text = desc
-    dLabel.TextColor3 = Color3.fromRGB(136, 135, 128)
-    dLabel.TextSize = 10
-    dLabel.TextTruncate = Enum.TextTruncate.AtEnd
-    dLabel.TextXAlignment = Enum.TextXAlignment.Left
-    dLabel.Parent = textHolder
-
-    local swBtn = Instance.new("TextButton")
-    swBtn.Size = UDim2.new(0, 44, 0, 24)
-    swBtn.Position = UDim2.new(1, -54, 0.5, -12)
-    swBtn.BackgroundColor3 = states[stateKey] and Color3.fromRGB(127, 119, 221) or Color3.fromRGB(60, 58, 75)
-    swBtn.Text = ""
-    swBtn.AutoButtonColor = false
-    swBtn.Parent = row
-
-    Instance.new("UICorner", swBtn).CornerRadius = UDim.new(1, 0)
-
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 18, 0, 18)
-    knob.Position = states[stateKey] and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
-    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    knob.Parent = swBtn
-
-    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-    toggleControls[stateKey] = { button = swBtn, knob = knob }
-
-    swBtn.MouseButton1Click:Connect(function()
-        states[stateKey] = not states[stateKey]
-        saveSettings()
-        updateProfileStats()
-        local isActive = states[stateKey]
-
-        swBtn.BackgroundColor3 = isActive and Color3.fromRGB(127, 119, 221) or Color3.fromRGB(60, 58, 75)
-        knob:TweenPosition(
-            isActive and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9),
-            Enum.EasingDirection.Out,
-            Enum.EasingStyle.Quad,
-            0.15,
-            true
-        )
-
-        if stateKey == "blockNotif" and textNotificationRE then
-            pcall(function()
-                for _, conn in ipairs(getconnections(textNotificationRE.OnClientEvent)) do
-                    if isActive then conn:Disable() else conn:Enable() end
-                end
-            end)
-        end
-    end)
-end
-
-createFeatureToggle(1, "Auto-Collect Money", "กวาดเก็บเงินจากสล็อตออโต้", "collect")
-createFeatureToggle(2, "Auto-Upgrade Tree", "ซื้ออัพเกรดผังความสามารถอัตโนมัติ", "upgradeTree")
-createFeatureToggle(3, "Auto-Level Units", "อัพเลเวลยูนิตในฐานตามเงินที่มี", "levelUnit")
-createFeatureToggle(4, "Auto-Equip Best Units", "สวมใส่ยูนิตที่ดีที่สุดลงสล็อต", "equipBest")
-createFeatureToggle(5, "Auto-BuyEquip Dice", "ซื้อและสวมใส่ลูกเต๋าที่ดีที่สุด", "dice")
-createFeatureToggle(6, "Auto-Rebirth", "ทำการจุติ (Rebirth) อัตโนมัติเมื่อเงินถึง", "autoRebirth")
-createFeatureToggle(7, "Smart Auto-Sell", "ขายยูนิตที่รายได้ต่ำกว่าค่าที่พิมพ์ออโต้", "smartSell")
-createFeatureToggle(8, "Block Notifications", "ซ่อนหน้าต่างแจ้งเตือนกวนใจ", "blockNotif")
-
-local configsPanel = Instance.new("Frame")
-configsPanel.Name = "ConfigsPanel"
-configsPanel.Size = UDim2.new(1, -24, 0, 330)
-configsPanel.Position = UDim2.new(0, 12, 0, 920)
-configsPanel.BackgroundTransparency = 1
-configsPanel.Parent = mainPanel
-
-local configHeader = Instance.new("TextButton")
-configHeader.Size = UDim2.new(1, 0, 0, 30)
-configHeader.BackgroundColor3 = Color3.fromRGB(60, 52, 137)
-configHeader.BorderSizePixel = 0
-configHeader.Font = Enum.Font.GothamBold
-configHeader.Text = "Configs  v"
-configHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
-configHeader.TextSize = 13
-configHeader.TextXAlignment = Enum.TextXAlignment.Left
-configHeader.AutoButtonColor = false
-configHeader.Parent = configsPanel
-Instance.new("UICorner", configHeader).CornerRadius = UDim.new(0, 6)
-
-local configBody = Instance.new("Frame")
-configBody.Size = UDim2.new(1, 0, 0, 292)
-configBody.Position = UDim2.new(0, 0, 0, 36)
-configBody.BackgroundColor3 = Color3.fromRGB(28, 24, 48)
-configBody.BorderSizePixel = 0
-configBody.Parent = configsPanel
-Instance.new("UICorner", configBody).CornerRadius = UDim.new(0, 6)
-
-local configNameLabel = Instance.new("TextLabel")
-configNameLabel.Size = UDim2.new(1, -12, 0, 18)
-configNameLabel.Position = UDim2.new(0, 6, 0, 4)
-configNameLabel.BackgroundTransparency = 1
-configNameLabel.Font = Enum.Font.Gotham
-configNameLabel.Text = "Config name"
-configNameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-configNameLabel.TextSize = 11
-configNameLabel.TextXAlignment = Enum.TextXAlignment.Left
-configNameLabel.Parent = configBody
-
-local configNameBox = Instance.new("TextBox")
-configNameBox.Size = UDim2.new(1, -12, 0, 25)
-configNameBox.Position = UDim2.new(0, 6, 0, 23)
-configNameBox.BackgroundColor3 = Color3.fromRGB(45, 38, 72)
-configNameBox.BorderSizePixel = 0
-configNameBox.Font = Enum.Font.Gotham
-configNameBox.PlaceholderText = "name..."
-configNameBox.Text = ""
-configNameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-configNameBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
-configNameBox.TextSize = 12
-configNameBox.ClearTextOnFocus = false
-configNameBox.Parent = configBody
-Instance.new("UICorner", configNameBox).CornerRadius = UDim.new(0, 4)
-
-local function makeConfigButton(text, position, size, color)
-    local button = Instance.new("TextButton")
-    button.Size = size
-    button.Position = position
-    button.BackgroundColor3 = color or Color3.fromRGB(45, 38, 72)
-    button.BorderSizePixel = 0
-    button.Font = Enum.Font.Gotham
-    button.Text = text
-    button.TextColor3 = Color3.fromRGB(235, 235, 235)
-    button.TextSize = 11
-    button.AutoButtonColor = true
-    button.Parent = configBody
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 4)
-    return button
-end
-
-local saveNewConfigButton = makeConfigButton(
-    "Save as new config",
-    UDim2.new(0, 6, 0, 53),
-    UDim2.new(1, -12, 0, 26),
-    Color3.fromRGB(60, 52, 137)
-)
-
-local savedConfigsLabel = Instance.new("TextLabel")
-savedConfigsLabel.Size = UDim2.new(1, -12, 0, 18)
-savedConfigsLabel.Position = UDim2.new(0, 6, 0, 82)
-savedConfigsLabel.BackgroundTransparency = 1
-savedConfigsLabel.Font = Enum.Font.GothamBold
-savedConfigsLabel.Text = "Saved configs"
-savedConfigsLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-savedConfigsLabel.TextSize = 11
-savedConfigsLabel.TextXAlignment = Enum.TextXAlignment.Left
-savedConfigsLabel.Parent = configBody
-
-local configList = Instance.new("ScrollingFrame")
-configList.Size = UDim2.new(1, -12, 0, 48)
-configList.Position = UDim2.new(0, 6, 0, 102)
-configList.BackgroundColor3 = Color3.fromRGB(20, 18, 32)
-configList.BorderSizePixel = 0
-configList.ScrollBarThickness = 3
-configList.CanvasSize = UDim2.new(0, 0, 0, 0)
-configList.Parent = configBody
-
-local configListLayout = Instance.new("UIListLayout")
-configListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-configListLayout.Padding = UDim.new(0, 2)
-configListLayout.Parent = configList
-
-local loadConfigButton = makeConfigButton("Load", UDim2.new(0, 6, 0, 156), UDim2.new(0.5, -9, 0, 26))
-local updateConfigButton = makeConfigButton("Update", UDim2.new(0.5, 3, 0, 156), UDim2.new(0.5, -9, 0, 26))
-local loadOnStartButton = makeConfigButton("Load on start", UDim2.new(0, 6, 0, 186), UDim2.new(0.5, -9, 0, 26))
-local deleteConfigButton = makeConfigButton("Delete", UDim2.new(0.5, 3, 0, 186), UDim2.new(0.5, -9, 0, 26), Color3.fromRGB(150, 55, 75))
-
-local loadStatusLabel = Instance.new("TextLabel")
-loadStatusLabel.Size = UDim2.new(1, -12, 0, 18)
-loadStatusLabel.Position = UDim2.new(0, 6, 0, 216)
-loadStatusLabel.BackgroundTransparency = 1
-loadStatusLabel.Font = Enum.Font.Gotham
-loadStatusLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-loadStatusLabel.TextSize = 10
-loadStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-loadStatusLabel.Parent = configBody
-
-local disableLoadButton = makeConfigButton("Don't load on start", UDim2.new(0, 6, 0, 238), UDim2.new(0.5, -9, 0, 26))
-local refreshConfigsButton = makeConfigButton("Refresh", UDim2.new(0.5, 3, 0, 238), UDim2.new(0.5, -9, 0, 26))
-
-local configMessageLabel = Instance.new("TextLabel")
-configMessageLabel.Size = UDim2.new(1, -12, 0, 18)
-configMessageLabel.Position = UDim2.new(0, 6, 0, 268)
-configMessageLabel.BackgroundTransparency = 1
-configMessageLabel.Font = Enum.Font.Gotham
-configMessageLabel.TextColor3 = Color3.fromRGB(250, 199, 117)
-configMessageLabel.TextSize = 10
-configMessageLabel.TextXAlignment = Enum.TextXAlignment.Left
-configMessageLabel.TextTruncate = Enum.TextTruncate.AtEnd
-configMessageLabel.Parent = configBody
-
-local function refreshLoadStatus()
-    loadStatusLabel.Text = "Loads on start: " .. (configStore.loadOnStart or "---")
-end
-
-local function refreshConfigList()
-    for _, child in ipairs(configList:GetChildren()) do
-        if child ~= configListLayout then
-            child:Destroy()
-        end
-    end
-
-    local names = {}
-    for name in pairs(configStore.profiles) do
-        table.insert(names, name)
-    end
-    table.sort(names)
-    updateProfileStats()
-    configList.CanvasSize = UDim2.new(0, 0, 0, math.max(#names, 1) * 24)
-
-    if #names == 0 then
-        local emptyLabel = Instance.new("TextLabel")
-        emptyLabel.Size = UDim2.new(1, -4, 0, 22)
-        emptyLabel.BackgroundTransparency = 1
-        emptyLabel.Font = Enum.Font.Gotham
-        emptyLabel.Text = "---"
-        emptyLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
-        emptyLabel.TextSize = 11
-        emptyLabel.TextXAlignment = Enum.TextXAlignment.Left
-        emptyLabel.Parent = configList
-        return
-    end
-
-    for index, name in ipairs(names) do
-        local profileName = name
-        local itemButton = Instance.new("TextButton")
-        itemButton.Size = UDim2.new(1, -4, 0, 22)
-        itemButton.LayoutOrder = index
-        itemButton.BackgroundColor3 = profileName == selectedConfig and Color3.fromRGB(60, 52, 137) or Color3.fromRGB(35, 31, 52)
-        itemButton.BorderSizePixel = 0
-        itemButton.Font = Enum.Font.Gotham
-        itemButton.Text = "  " .. profileName
-        itemButton.TextColor3 = Color3.fromRGB(240, 240, 240)
-        itemButton.TextSize = 11
-        itemButton.TextXAlignment = Enum.TextXAlignment.Left
-        itemButton.Parent = configList
-        itemButton.MouseButton1Click:Connect(function()
-            selectedConfig = profileName
-            configNameBox.Text = profileName
-            configMessageLabel.Text = "Selected: " .. profileName
-            refreshConfigList()
-        end)
-    end
-end
-
-configHeader.MouseButton1Click:Connect(function()
-    configBody.Visible = not configBody.Visible
-    configHeader.Text = configBody.Visible and "Configs  v" or "Configs  >"
-end)
-
-saveNewConfigButton.MouseButton1Click:Connect(function()
-    local name = string.gsub(configNameBox.Text, "^%s*(.-)%s*$", "%1")
-    if name == "" then
-        configMessageLabel.Text = "Enter a config name"
-        return
-    end
-    if configStore.profiles[name] then
-        configMessageLabel.Text = "Config already exists; use Update"
-        return
-    end
-    configStore.profiles[name] = captureSettings()
-    selectedConfig = name
-    if saveConfigStore() then
-        configMessageLabel.Text = "Saved: " .. name
-    else
-        configMessageLabel.Text = "Save failed: executor file APIs unavailable"
-    end
-    refreshConfigList()
-    refreshLoadStatus()
-end)
-
-loadConfigButton.MouseButton1Click:Connect(function()
-    local profile = selectedConfig and configStore.profiles[selectedConfig]
-    if not profile then
-        configMessageLabel.Text = "Select a saved config"
-        return
-    end
-    applySettings(profile)
-    saveSettings()
-    updateProfileStats()
-    configMessageLabel.Text = "Loaded: " .. selectedConfig
-end)
-
-updateConfigButton.MouseButton1Click:Connect(function()
-    if not selectedConfig or not configStore.profiles[selectedConfig] then
-        configMessageLabel.Text = "Select a saved config"
-        return
-    end
-    configStore.profiles[selectedConfig] = captureSettings()
-    if saveConfigStore() then
-        configMessageLabel.Text = "Updated: " .. selectedConfig
-    else
-        configMessageLabel.Text = "Update failed: executor file APIs unavailable"
-    end
-    refreshConfigList()
-end)
-
-loadOnStartButton.MouseButton1Click:Connect(function()
-    if not selectedConfig or not configStore.profiles[selectedConfig] then
-        configMessageLabel.Text = "Select a saved config"
-        return
-    end
-    configStore.loadOnStart = selectedConfig
-    if saveConfigStore() then
-        configMessageLabel.Text = "Will load: " .. selectedConfig
-    else
-        configMessageLabel.Text = "Save failed: executor file APIs unavailable"
-    end
-    refreshLoadStatus()
-end)
-
-disableLoadButton.MouseButton1Click:Connect(function()
-    configStore.loadOnStart = nil
-    if saveConfigStore() then
-        configMessageLabel.Text = "Startup profile disabled; latest settings still restore"
-    else
-        configMessageLabel.Text = "Save failed: executor file APIs unavailable"
-    end
-    refreshLoadStatus()
-end)
-
-deleteConfigButton.MouseButton1Click:Connect(function()
-    if not selectedConfig or not configStore.profiles[selectedConfig] then
-        configMessageLabel.Text = "Select a saved config"
-        return
-    end
-    local deletedName = selectedConfig
-    configStore.profiles[deletedName] = nil
-    if configStore.loadOnStart == deletedName then
-        configStore.loadOnStart = nil
-    end
-    selectedConfig = nil
-    configNameBox.Text = ""
-    if saveConfigStore() then
-        configMessageLabel.Text = "Deleted: " .. deletedName
-    else
-        configMessageLabel.Text = "Delete failed: executor file APIs unavailable"
-    end
-    refreshConfigList()
-    refreshLoadStatus()
-end)
-
-refreshConfigsButton.MouseButton1Click:Connect(function()
-    configStore = loadConfigStore()
-    if selectedConfig and not configStore.profiles[selectedConfig] then
-        selectedConfig = nil
-        configNameBox.Text = ""
-    end
-    refreshConfigList()
-    refreshLoadStatus()
-    configMessageLabel.Text = "Configs refreshed"
-end)
-
-refreshConfigList()
-refreshLoadStatus()
-
--- ฟังก์ชันแปลงข้อความตัวย่อ (เช่น 1.5qd, 500m) ให้เป็นตัวเลขเต็มสำหรับคำนวณ
-local function parseIncomeThreshold(inputStr)
-    if type(inputStr) == "number" then return inputStr end
-    if type(inputStr) ~= "string" then return 0 end
+local function scanAllObjects(origin, maxRange, filterRarity, highestOnly, giantOnly, millionOnly)
+    local results = {}
+    local char = LocalPlayer.Character
     
-    inputStr = string.lower(string.gsub(inputStr, "%s+", ""))
-    local numberPart = tonumber(string.match(inputStr, "[%d%.]+")) or 0
-    local unit = string.match(inputStr, "[a-z]+")
-    
-    local multipliers = {
-        k = 1e3,
-        m = 1e6,
-        b = 1e9,
-        t = 1e12,
-        qd = 1e15,
-        qi = 1e18
-    }
-    
-    if unit and multipliers[unit] then
-        numberPart = numberPart * multipliers[unit]
-    end
-    
-    return numberPart
-end
-
-pcall(function()
-    if textNotificationRE then
-        for _, conn in ipairs(getconnections(textNotificationRE.OnClientEvent)) do
-            conn:Disable()
-        end
-    end
-end)
-
--- Anti-AFK Worker
-task.spawn(function()
-    local connection
-    connection = localPlayer.Idled:Connect(function()
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-        end)
-    end)
-end)
-
--- Master Loop
-task.spawn(function()
-    while true do
-        task.wait(1.5)
-        
-        if states.collect and collectBalanceEvent then
-            pcall(function()
-                for i = 1, 50 do
-                    collectBalanceEvent:FireServer(i)
-                end
-                queueWebhookEvent("Collect: sent 50 requests")
-            end)
-        end
-        
-        if states.upgradeTree and buyUpgradeEvent and DataController then
-            pcall(function()
-                local currentMoney = DataController.Money() or 0
-                local function checkAndBuy(nodeName)
-                    for _, childName in ipairs(TreeStructure.GetChildren(nodeName) or {}) do
-                        local isOwned = DataController.Upgrades[childName] and DataController.Upgrades[childName]()
-                        if not isOwned then
-                            local upgradeData = UpgradesConfig[childName]
-                            if upgradeData and currentMoney >= upgradeData.price then
-                                buyUpgradeEvent:FireServer(childName)
-                                queueWebhookEvent("Upgrade request: " .. childName)
-                                task.wait(0.2)
-                            end
-                            checkAndBuy(childName)
-                        else
-                            checkAndBuy(childName)
-                        end
-                    end
-                end
-                checkAndBuy("Start")
-            end)
-        end
-        
-        if states.levelUnit and levelUpSlotEvent and DataController then
-            pcall(function()
-                local levelRequests = 0
-                for slotIdx = 1, 50 do
-                    if not states.levelUnit then break end
-                    local slotData = DataController.Slots and DataController.Slots[tostring(slotIdx)] and DataController.Slots[tostring(slotIdx)]()
-                    if slotData and slotData.unitId then
-                        levelUpSlotEvent:FireServer(slotIdx)
-                        levelRequests = levelRequests + 1
-                        task.wait(0.1)
-                    end
-                end
-                if levelRequests > 0 then
-                    queueWebhookEvent("Level-up requests: " .. tostring(levelRequests))
-                end
-            end)
-        end
-        
-        if states.equipBest and equipBestEvent then
-            pcall(function()
-                equipBestEvent:FireServer()
-                queueWebhookEvent("Equip best request")
-            end)
-        end
-        
-        if states.dice and DataController and buyDiceEvent and equipDiceEvent then
-            pcall(function()
-                local currentMoney = DataController.Money() or 0
-                local allDice = DiceConfig.GetAll()
-                local sortedDice = {}
-                for diceName, diceData in pairs(allDice) do
-                    if diceData.price then
-                        table.insert(sortedDice, {name = diceName, data = diceData})
-                    end
-                end
-                table.sort(sortedDice, function(a, b)
-                    return a.data.luck > b.data.luck
-                end)
-                
-                local targetToBuy = nil
-                local bestOwnedDice = nil
-                
-                for _, entry in ipairs(sortedDice) do
-                    local diceName = entry.name
-                    local diceData = entry.data
-                    local isOwned = DataController.OwnedDice[diceName] and DataController.OwnedDice[diceName]()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj:GetAttribute("Rarity") ~= nil then
+            local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+            if primary and (not char or not obj:IsDescendantOf(char)) then
+                local dist = (primary.Position - origin.Position).Magnitude
+                if dist <= maxRange then
+                    local rarity = tostring(obj:GetAttribute("Rarity"))
+                    local col = RadarData.RARITY_COLOR[rarity] or primary.Color or Color3.fromRGB(200, 200, 200)
+                    local score = RadarData.RARITY_ORDER[rarity] or 1
                     
-                    if isOwned then
-                        if not bestOwnedDice then
-                            bestOwnedDice = diceName
-                        end
-                    else
-                        if currentMoney >= diceData.price and not targetToBuy then
-                            targetToBuy = diceName
-                        end
+                    local _, size = obj:GetBoundingBox()
+                    local maxDim = math.max(size.X, size.Y, size.Z)
+                    
+                    local isMillion = false
+                    local valAttr = obj:GetAttribute("Value") or obj:GetAttribute("Price") or obj:GetAttribute("Money")
+                    if type(valAttr) == "number" and valAttr >= 1000000 then
+                        isMillion = true
+                    elseif score >= 7 then
+                        isMillion = true
                     end
-                end
-                
-                if targetToBuy then
-                    buyDiceEvent:FireServer(targetToBuy)
-                    queueWebhookEvent("Buy dice request: " .. targetToBuy)
-                    task.wait(0.3)
-                end
-                
-                if bestOwnedDice and DataController.Dice() ~= bestOwnedDice then
-                    equipDiceEvent:FireServer(bestOwnedDice)
-                    queueWebhookEvent("Equip dice request: " .. bestOwnedDice)
-                end
-            end)
-        end
 
-        if states.autoRebirth and rebirthEvent and DataController then
-            pcall(function()
-                local currentRebirth = DataController.Rebirth() or 0
-                local nextRebirthData = RebirthsConfig.GetNext(currentRebirth)
-                if nextRebirthData then
-                    local currentMoney = DataController.Money() or 0
-                    if currentMoney >= nextRebirthData.cost then
-                        rebirthEvent:FireServer()
-                        queueWebhookEvent("Rebirth request")
-                    end
-                end
-            end)
-        end
-
-        -- ระบบขายยูนิตอัตโนมัติอัจฉริยะตามค่าที่ผู้เล่นพิมพ์กำหนด (Custom Smart Auto-Sell)
-        if states.smartSell and DataController and SellUtil and EntryRegistry and sellInventoryEvent then
-            pcall(function()
-                local inventory = DataController.Inventory()
-                local slots = DataController.Slots()
-                local plottedUnits = SellUtil.GetPlottedUnits(slots)
-                local itemsToSellKeys = {}
-                
-                -- แปลงค่าที่พิมพ์ในช่อง (เช่น 1.5qd) เป็นตัวเลขเปรียบเทียบ
-                local thresholdLimit = parseIncomeThreshold(thresholdBox.Text)
-
-                for key, item in pairs(inventory) do
-                    if item and item.amount and item.amount > 0 then
-                        -- ห้ามขายตัวที่ล็อกไว้ หรือ ตัวที่ติดตั้งอยู่บนบอร์ดสล็อต
-                        if not item.attributes.locked and not plottedUnits[key] then
-                            local entryConfig = EntryRegistry.getEntryConfig(item.name)
-                            if entryConfig and entryConfig.kind == "Unit" then
-                                local income = entryConfig.income(item.attributes)
-                                
-                                -- ถ้ารายได้ต่ำกว่าค่าที่ผู้เล่นกำหนดในช่อง จะถูกจัดเข้าคิวขายทันที
-                                if thresholdLimit > 0 and income < thresholdLimit then
-                                    table.insert(itemsToSellKeys, key)
-                                end
+                    if not millionOnly or isMillion then
+                        if not giantOnly or maxDim >= 15 then
+                            if not filterRarity or rarity:lower() == filterRarity:lower() then
+                                table.insert(results, {
+                                    key = obj,
+                                    adornee = primary,
+                                    pos = primary.Position,
+                                    dist = dist,
+                                    name = obj.Name,
+                                    rarity = rarity,
+                                    color = col,
+                                    score = score,
+                                    size = maxDim,
+                                })
                             end
                         end
                     end
                 end
+            end
+        end
+    end
 
-                if #itemsToSellKeys > 0 then
-                    sellInventoryEvent:InvokeServer(itemsToSellKeys)
-                    queueWebhookEvent("Sell request: " .. tostring(#itemsToSellKeys) .. " items")
+    table.sort(results, function(a, b)
+        if millionOnly or highestOnly then
+            if a.score ~= b.score then return a.score > b.score end
+        elseif giantOnly then
+            if a.size ~= b.size then return a.size > b.size end
+        end
+        return a.dist < b.dist
+    end)
+
+    if (highestOnly or giantOnly or millionOnly) and #results > 0 then
+        return { results[1] }
+    end
+
+    return results
+end
+
+local function stopRadar()
+    if radarState then
+        for _, b in pairs(radarState.blips) do if b.bb then b.bb:Destroy() end end
+        for _, s in pairs(radarState.scopeBlips) do if s then s:Destroy() end end
+        radarState = nil
+    end
+    radarHudPanel.Visible = false
+end
+
+local function startRadar(radarId, isAll, highestOnly, giantOnly, millionOnly)
+    stopRadar()
+    local def = RadarData.ById[radarId] or { displayName = radarId, radius = 600 }
+    local targetRarity = not isAll and not highestOnly and not giantOnly and not millionOnly and radarId:gsub("Radar", "") or nil
+
+    radarState = {
+        nextScan = 0,
+        radius = def.radius,
+        blips = {},
+        scopeBlips = {},
+        targets = {},
+        filter = targetRarity,
+        isAll = isAll,
+        highestOnly = highestOnly,
+        giantOnly = giantOnly,
+        millionOnly = millionOnly,
+    }
+
+    if millionOnly then
+        scopeStroke.Color = Color3.fromRGB(255, 215, 0)
+        radarTitle.Text = "<font color=\"#FFD700\">💰 1M+ VALUE</font>"
+    elseif giantOnly then
+        scopeStroke.Color = Color3.fromRGB(50, 220, 255)
+        radarTitle.Text = "<font color=\"#32DCFF\">🏔️ GIANT OBJECT</font>"
+    elseif highestOnly then
+        scopeStroke.Color = Color3.fromRGB(255, 75, 220)
+        radarTitle.Text = "<font color=\"#FF4BDC\">👑 HIGHEST VALUE</font>"
+    else
+        scopeStroke.Color = isAll and Color3.fromRGB(255, 220, 50) or (RadarData.RARITY_COLOR[targetRarity] or SCOPE_GREEN)
+        radarTitle.Text = isAll and "<font color=\"#FFDC32\">🌟 ALL RADARS</font>" or string.format("<font color=\"%s\">%s</font>", hex(scopeStroke.Color), def.displayName)
+    end
+    radarHudPanel.Visible = true
+end
+
+local MillionScanBtn = createButton(RightCol, "MillionScanBtn", "💰 1M+ Value: OFF", Color3.fromRGB(180, 140, 20), 0)
+local GiantScanBtn = createButton(RightCol, "GiantScanBtn", "🏔️ Giant Object: OFF", Color3.fromRGB(30, 110, 140), 1)
+local HighestOnlyBtn = createButton(RightCol, "HighestOnlyBtn", "👑 Highest Value: OFF", Color3.fromRGB(140, 40, 110), 2)
+local AllRadarsBtn = createButton(RightCol, "AllRadarsBtn", "🌟 All Radars: OFF", Color3.fromRGB(120, 90, 20), 3)
+
+local radarList = {
+    {id = "CommonRadar", name = "⚪ Common", order = 4},
+    {id = "UncommonRadar", name = "🟢 Uncommon", order = 5},
+    {id = "RareRadar", name = "🔵 Rare", order = 6},
+    {id = "EpicRadar", name = "🟣 Epic", order = 7},
+    {id = "LegendaryRadar", name = "🟠 Legendary", order = 8},
+    {id = "MythicRadar", name = "🔴 Mythic", order = 9},
+    {id = "ExoticRadar", name = "🟡 Exotic", order = 10},
+    {id = "ZenithRadar", name = "✨ Zenith", order = 11},
+    {id = "MeteorRadar", name = "☄️ Meteor", order = 12},
+}
+local radarButtons = {}
+
+local function resetAllBtns()
+    MillionScanBtn.Text = "💰 1M+ Value: OFF"
+    MillionScanBtn.BackgroundColor3 = Color3.fromRGB(180, 140, 20)
+    GiantScanBtn.Text = "🏔️ Giant Object: OFF"
+    GiantScanBtn.BackgroundColor3 = Color3.fromRGB(30, 110, 140)
+    HighestOnlyBtn.Text = "👑 Highest Value: OFF"
+    HighestOnlyBtn.BackgroundColor3 = Color3.fromRGB(140, 40, 110)
+    AllRadarsBtn.Text = "🌟 All Radars: OFF"
+    AllRadarsBtn.BackgroundColor3 = Color3.fromRGB(120, 90, 20)
+    for id, btn in pairs(radarButtons) do
+        local info = nil
+        for _, v in ipairs(radarList) do if v.id == id then info = v end end
+        btn.Text = (info and info.name or id) .. ": OFF"
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    end
+end
+
+MillionScanBtn.MouseButton1Click:Connect(function()
+    if getgenv().MillionScanActive then
+        getgenv().MillionScanActive = false
+        getgenv().ActiveRadarId = nil
+        resetAllBtns()
+        stopRadar()
+    else
+        getgenv().MillionScanActive = true
+        getgenv().GiantScanActive = false
+        getgenv().HighestOnlyActive = false
+        getgenv().AllRadarsActive = false
+        getgenv().ActiveRadarId = "Million"
+        resetAllBtns()
+        MillionScanBtn.Text = "💰 1M+ Value: ON"
+        MillionScanBtn.BackgroundColor3 = Color3.fromRGB(220, 170, 20)
+        startRadar("MeteorRadar", false, false, false, true)
+    end
+end)
+
+GiantScanBtn.MouseButton1Click:Connect(function()
+    if getgenv().GiantScanActive then
+        getgenv().GiantScanActive = false
+        getgenv().ActiveRadarId = nil
+        resetAllBtns()
+        stopRadar()
+    else
+        getgenv().GiantScanActive = true
+        getgenv().MillionScanActive = false
+        getgenv().HighestOnlyActive = false
+        getgenv().AllRadarsActive = false
+        getgenv().ActiveRadarId = "Giant"
+        resetAllBtns()
+        GiantScanBtn.Text = "🏔️ Giant Object: ON"
+        GiantScanBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 200)
+        startRadar("MeteorRadar", false, false, true, false)
+    end
+end)
+
+HighestOnlyBtn.MouseButton1Click:Connect(function()
+    if getgenv().HighestOnlyActive then
+        getgenv().HighestOnlyActive = false
+        getgenv().ActiveRadarId = nil
+        resetAllBtns()
+        stopRadar()
+    else
+        getgenv().HighestOnlyActive = true
+        getgenv().MillionScanActive = false
+        getgenv().GiantScanActive = false
+        getgenv().AllRadarsActive = false
+        getgenv().ActiveRadarId = "Highest"
+        resetAllBtns()
+        HighestOnlyBtn.Text = "👑 Highest Value: ON"
+        HighestOnlyBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 160)
+        startRadar("MeteorRadar", false, true, false, false)
+    end
+end)
+
+AllRadarsBtn.MouseButton1Click:Connect(function()
+    if getgenv().AllRadarsActive then
+        getgenv().AllRadarsActive = false
+        getgenv().HighestOnlyActive = false
+        getgenv().GiantScanActive = false
+        resetAllBtns()
+        stopRadar()
+    else
+        getgenv().AllRadarsActive = true
+        getgenv().MillionScanActive = false
+        getgenv().HighestOnlyActive = false
+        getgenv().GiantScanActive = false
+        resetAllBtns()
+        AllRadarsBtn.Text = "🌟 All Radars: ON"
+        AllRadarsBtn.BackgroundColor3 = Color3.fromRGB(180, 130, 20)
+        startRadar("MeteorRadar", true, false, false, false)
+    end
+end)
+
+for _, info in ipairs(radarList) do
+    local btn = createButton(RightCol, info.id, info.name .. ": OFF", Color3.fromRGB(50, 50, 55), info.order)
+    radarButtons[info.id] = btn
+    btn.MouseButton1Click:Connect(function()
+        if getgenv().ActiveRadarId == info.id then
+            getgenv().ActiveRadarId = nil
+            getgenv().AllRadarsActive = false
+            getgenv().HighestOnlyActive = false
+            getgenv().GiantScanActive = false
+            getgenv().MillionScanActive = false
+            resetAllBtns()
+            stopRadar()
+        else
+            getgenv().AllRadarsActive = false
+            getgenv().HighestOnlyActive = false
+            getgenv().GiantScanActive = false
+            getgenv().MillionScanActive = false
+            resetAllBtns()
+            getgenv().ActiveRadarId = info.id
+            btn.Text = info.name .. ": ON"
+            btn.BackgroundColor3 = Color3.fromRGB(35, 110, 50)
+            startRadar(info.id, false, false, false, false)
+        end
+    end)
+end
+
+-- ระบบทำงานความเร็ววิ่ง (WalkSpeed)
+RunService.RenderStepped:Connect(function()
+    if getgenv().WalkSpeedActive then
+        local char = LocalPlayer.Character
+        if char then
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid.WalkSpeed = getgenv().CustomWalkSpeed
+            end
+        end
+    end
+
+    if not getgenv().ActiveRadarId or not radarState then return end
+
+    local now = os.clock()
+    scopeFrame.Rotation = (now * 150) % 360
+
+    if radarState.nextScan <= now then
+        radarState.nextScan = now + 0.4
+        local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if root then
+            local targets = scanAllObjects(root, radarState.radius, radarState.filter, radarState.highestOnly, radarState.giantOnly, radarState.millionOnly)
+            radarState.targets = targets
+
+            if #targets > 0 then
+                local best = targets[1]
+                if radarState.millionOnly then
+                    radarLine1.Text = string.format("💰 1M+: <font color=\"%s\">[%s] %s</font>", hex(best.color), best.rarity, best.name)
+                    radarLine2.Text = string.format("Distance: %s", studs(best.dist))
+                elseif radarState.giantOnly then
+                    radarLine1.Text = string.format("🏔️ Giant: <font color=\"%s\">[%s] %s</font>", hex(best.color), best.rarity, best.name)
+                    radarLine2.Text = string.format("Size: %d studs → %s", math.floor(best.size), studs(best.dist))
+                elseif radarState.highestOnly then
+                    radarLine1.Text = string.format("👑 Best: <font color=\"%s\">[%s] %s</font>", hex(best.color), best.rarity, best.name)
+                    radarLine2.Text = string.format("Distance: %s", studs(best.dist))
+                else
+                    radarLine1.Text = string.format("⚡ Found: <font color=\"%s\">%s</font>", hex(best.color), best.name)
+                    radarLine2.Text = string.format("Distance: %s", studs(best.dist))
+                end
+            else
+                radarLine1.Text = "Scanning Area..."
+                radarLine2.Text = "No items in range"
+            end
+
+            local activeKeys = {}
+            for _, t in ipairs(targets) do
+                activeKeys[t.key] = true
+                local txt = string.format("<font color=\"%s\">%s</font> (%s)", hex(t.color), t.rarity, studs(t.dist))
+                local blip = radarState.blips[t.key]
+
+                if not blip or not blip.bb.Parent then
+                    blip = worldBlip(t.adornee, t.color, txt)
+                    radarState.blips[t.key] = blip
+                end
+                if blip.label then blip.label.Text = txt end
+                blip.dot.BackgroundColor3 = t.color
+
+                local sBlip = radarState.scopeBlips[t.key]
+                if not sBlip then
+                    sBlip = Instance.new("Frame")
+                    sBlip.AnchorPoint = Vector2.new(0.5, 0.5)
+                    sBlip.Size = UDim2.fromOffset(6, 6)
+                    sBlip.BorderSizePixel = 0
+                    sBlip.Position = UDim2.fromScale(0.5, 0.5)
+                    Instance.new("UICorner", sBlip).CornerRadius = UDim.new(1, 0)
+                    sBlip.Parent = scopeMask
+                    radarState.scopeBlips[t.key] = sBlip
+                end
+                sBlip.BackgroundColor3 = t.color
+            end
+
+            for k, b in pairs(radarState.blips) do
+                if not activeKeys[k] then b.bb:Destroy() radarState.blips[k] = nil end
+            end
+            for k, s in pairs(radarState.scopeBlips) do
+                if not activeKeys[k] then s:Destroy() radarState.scopeBlips[k] = nil end
+            end
+        end
+    end
+
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local cam = workspace.CurrentCamera
+    if root and cam then
+        local fwd = cam.CFrame.LookVector
+        local flatFwd = Vector3.new(fwd.X, 0, fwd.Z).Unit
+        local right = flatFwd:Cross(Vector3.new(0, 1, 0))
+        local radius = radarState.radius
+
+        for _, t in ipairs(radarState.targets) do
+            local sBlip = radarState.scopeBlips[t.key]
+            if sBlip then
+                local delta = t.pos - root.Position
+                local x = delta:Dot(right) / radius
+                local y = delta:Dot(flatFwd) / radius
+                local dist = math.sqrt((x * x) + (y * y))
+                if dist > 0.94 then
+                    x = x / dist * 0.94
+                    y = y / dist * 0.94
+                end
+                sBlip.Position = UDim2.fromScale(0.5 + (x * 0.5), 0.5 - (y * 0.5))
+            end
+        end
+    end
+end)
+
+-- ระบบ Auto Press E / ProximityPrompt
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if getgenv().AutoInteractActive then
+            pcall(function()
+                for _, obj in ipairs(workspace:GetDescendants()) do
+                    if obj:IsA("ProximityPrompt") then
+                        local parent = obj.Parent
+                        local pos = nil
+                        if parent:IsA("BasePart") then
+                            pos = parent.Position
+                        elseif parent:IsA("Model") and parent.PrimaryPart then
+                            pos = parent.PrimaryPart.Position
+                        end
+                        
+                        if pos and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                            local rootPos = LocalPlayer.Character.HumanoidRootPart.Position
+                            if (pos - rootPos).Magnitude <= (obj.MaxActivationDistance or 25) then
+                                fireproximityprompt(obj)
+                            end
+                        end
+                    end
                 end
             end)
         end
     end
 end)
 
-print("Epic AFK Master UI with Custom Smart Auto-Sell Loaded Smoothly.")
+task.spawn(function()
+    local DigRequest = ReplicatedStorage:WaitForChild("DigRemotes"):WaitForChild("DigRequest", 10)
+    while true do
+        task.wait(getgenv().DigDelayValue)
+        if getgenv().AutoDigActive and DigRequest then
+            pcall(function() DigRequest:FireServer(Mouse.Hit.Position, true) end)
+        end
+    end
+end)
+
+print("[Piriya Hub] Standard Radars & WalkSpeed Loaded Successfully!")
