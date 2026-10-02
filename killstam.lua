@@ -1,5 +1,5 @@
 -- ════════════════════════════════════════════════════════════════
---   K I L L S T A M   H U B   —   UI โฉมใหม่ (ฟาร์ม • ร้านค้า • วาร์ป • เรดาร์)
+--   K I L L S T A M   H U B   —   UI โฉมใหม่ (ฟาร์ม • ร้านค้า • วาร์ป • เรดาร์ • ผู้เล่น)
 --   RightShift = ซ่อน/แสดงเมนู  •  ลากแถบหัวเมนูเพื่อย้ายตำแหน่ง
 -- ════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
@@ -268,6 +268,8 @@ getgenv().AllRadarsActive = false
 getgenv().HighestOnlyActive = false
 getgenv().GiantScanActive = false
 getgenv().MillionScanActive = false
+getgenv().PlayerESPActive = false
+getgenv().SpectateActive = false
 local savedPosition = nil
 local currentPositionBeforeTp = nil
 
@@ -370,8 +372,9 @@ local function notify(title, message, accent, icon, duration)
 end
 
 -- ═════════════════════════ หน้าต่างหลัก ═════════════════════════
-local WINDOW_W, WINDOW_H = 560, 420
+local WINDOW_W, WINDOW_H = 560, 500
 local COLLAPSED_H = 78
+local BODY_H = WINDOW_H - 120
 
 local MainFrame = create("Frame", {
     Name = "MainFrame",
@@ -603,7 +606,7 @@ local MinBtn = headerButton("—", -42, Theme.Violet, 12)
 local Sidebar = create("Frame", {
     Name = "Sidebar",
     Position = UDim2.fromOffset(8, 78),
-    Size = UDim2.fromOffset(142, 300),
+    Size = UDim2.fromOffset(142, BODY_H),
     BackgroundColor3 = Theme.Panel,
     BackgroundTransparency = 0.2,
     Parent = MainFrame,
@@ -614,7 +617,7 @@ stroke(Sidebar, Theme.Stroke, 1, 0.5)
 local Content = create("Frame", {
     Name = "Content",
     Position = UDim2.fromOffset(158, 78),
-    Size = UDim2.fromOffset(394, 300),
+    Size = UDim2.fromOffset(394, BODY_H),
     BackgroundTransparency = 1,
     ClipsDescendants = true,
     Parent = MainFrame,
@@ -622,7 +625,7 @@ local Content = create("Frame", {
 
 local Footer = create("Frame", {
     Name = "Footer",
-    Position = UDim2.fromOffset(8, 386),
+    Position = UDim2.fromOffset(8, WINDOW_H - 34),
     Size = UDim2.new(1, -16, 0, 26),
     BackgroundColor3 = Theme.Panel,
     BackgroundTransparency = 0.2,
@@ -662,9 +665,19 @@ local function setStatus(message, color)
 end
 
 -- ─────────── แผง LIVE (ไฟบอกระบบที่เปิดอยู่) ───────────
+local LIVE_ITEMS = {
+    { key = "dig", name = "ขุดอัตโนมัติ", color = Theme.Crimson },
+    { key = "interact", name = "กด E", color = Theme.Ember },
+    { key = "speed", name = "ความเร็ว", color = Theme.Cyan },
+    { key = "radar", name = "เรดาร์", color = Theme.Violet },
+    { key = "esp", name = "ESP ผู้เล่น", color = Theme.Pink },
+    { key = "spec", name = "สเปคจอ", color = Theme.Gold },
+}
+local LIVE_H = 26 + #LIVE_ITEMS * 15
+
 local LivePanel = create("Frame", {
-    Position = UDim2.new(0, 8, 1, -94),
-    Size = UDim2.new(1, -16, 0, 86),
+    Position = UDim2.new(0, 8, 1, -(LIVE_H + 8)),
+    Size = UDim2.new(1, -16, 0, LIVE_H),
     BackgroundColor3 = Theme.Card,
     BackgroundTransparency = 0.25,
     Parent = Sidebar,
@@ -683,18 +696,12 @@ local LiveCount = text(LivePanel, {
     Position = UDim2.fromOffset(10, 6),
     Size = UDim2.new(1, -20, 0, 14),
     Font = Enum.Font.GothamBlack,
-    Text = "0/4",
+    Text = "0/" .. #LIVE_ITEMS,
     TextColor3 = Theme.SubText,
     TextSize = 10,
     TextXAlignment = Enum.TextXAlignment.Right,
 })
 
-local LIVE_ITEMS = {
-    { key = "dig", name = "ขุดอัตโนมัติ", color = Theme.Crimson },
-    { key = "interact", name = "กด E", color = Theme.Ember },
-    { key = "speed", name = "ความเร็ว", color = Theme.Cyan },
-    { key = "radar", name = "เรดาร์", color = Theme.Violet },
-}
 local liveRows = {}
 for i, item in ipairs(LIVE_ITEMS) do
     local y = 24 + (i - 1) * 15
@@ -736,6 +743,8 @@ local function refreshLive()
         interact = getgenv().AutoInteractActive,
         speed = getgenv().WalkSpeedActive,
         radar = getgenv().ActiveRadarId ~= nil,
+        esp = getgenv().PlayerESPActive,
+        spec = getgenv().SpectateActive,
     }
     local count = 0
     for key, row in pairs(liveRows) do
@@ -749,7 +758,7 @@ local function refreshLive()
         row.state.Text = on and "ON" or "OFF"
         row.state.TextColor3 = on and row.color or Theme.Muted
     end
-    LiveCount.Text = count .. "/4"
+    LiveCount.Text = count .. "/" .. #LIVE_ITEMS
 end
 
 -- ═════════════════════════ คอมโพเนนต์ ═════════════════════════
@@ -823,7 +832,7 @@ local function createSection(page, title, accent, order)
     })
     round(bar)
     gradient(bar, { accent:Lerp(WHITE, 0.3), accent }, 90)
-    text(holder, {
+    local titleLabel = text(holder, {
         Position = UDim2.fromOffset(12, 2),
         Size = UDim2.new(1, -12, 0, 18),
         Text = title,
@@ -838,6 +847,7 @@ local function createSection(page, title, accent, order)
         Parent = holder,
     })
     gradient(line, { accent, accent }, 0, fadeSeq({ { 0, 0.4 }, { 1, 1 } }))
+    return titleLabel
 end
 
 local function createToggle(page, opts)
@@ -2145,12 +2155,545 @@ createActionRow(RadarPage, {
     end,
 })
 
+-- ═════════════════════════ ระบบผู้เล่น (ESP • สเปคจอ • วาร์ปหา) ═════════════════════════
+-- ห่อไว้ใน do...end เพื่อไม่ให้ตัวแปร local ระดับบนสุดเกินขีดจำกัด 200 ตัวของ Luau
+local updatePlayerTools, stopPlayerTools
+do
+    local selectedPlayer = nil
+    local playerRows = {}
+    local thumbCache = {}
+    local ESP_COLOR = Theme.Pink
+    local TARGET_COLOR = Theme.Gold
+    local hasDrawing = pcall(function()
+        Drawing.new("Line"):Remove()
+    end)
+
+    local function getRoot(player)
+        local char = player and player.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function getHumanoid(player)
+        local char = player and player.Character
+        return char and char:FindFirstChildOfClass("Humanoid")
+    end
+
+    local function distanceTo(player)
+        local myRoot, theirRoot = getRoot(LocalPlayer), getRoot(player)
+        if myRoot and theirRoot then
+            return (myRoot.Position - theirRoot.Position).Magnitude
+        end
+        return nil
+    end
+
+    -- รูปโปรไฟล์ผู้เล่นแบบวงกลม (โหลดเบื้องหลัง + แคชไว้ใช้ซ้ำ)
+    local function avatarBubble(parent, size)
+        local frame = create("Frame", {
+            Size = UDim2.fromOffset(size, size),
+            BackgroundColor3 = Color3.fromRGB(38, 31, 67),
+            Parent = parent,
+        })
+        round(frame)
+        local initial = text(frame, {
+            Size = UDim2.fromScale(1, 1),
+            Font = Enum.Font.GothamBlack,
+            Text = "?",
+            TextColor3 = Color3.fromRGB(255, 243, 196),
+            TextSize = math.floor(size * 0.45),
+            TextXAlignment = Enum.TextXAlignment.Center,
+        })
+        local image = create("ImageLabel", {
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            ImageTransparency = 1,
+            ScaleType = Enum.ScaleType.Crop,
+            ZIndex = 2,
+            Parent = frame,
+        })
+        round(image)
+        return { frame = frame, image = image, initial = initial, userId = nil }
+    end
+
+    local function showAvatar(avatar, player)
+        avatar.userId = player and player.UserId
+        avatar.image.ImageTransparency = 1
+        avatar.initial.Visible = true
+        avatar.initial.Text = player and string.sub(player.Name, 1, 1):upper() or "?"
+        if not player then
+            return
+        end
+        local userId = player.UserId
+        local function apply(image)
+            if avatar.userId == userId and avatar.image.Parent then
+                avatar.image.Image = image
+                avatar.image.ImageTransparency = 0
+                avatar.initial.Visible = false
+            end
+        end
+        if thumbCache[userId] then
+            apply(thumbCache[userId])
+            return
+        end
+        task.spawn(function()
+            local ok, image = pcall(function()
+                return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+            end)
+            if ok and image then
+                thumbCache[userId] = image
+                apply(image)
+            end
+        end)
+    end
+
+    -- ESP วาดด้วย Drawing API (กรอบ • เส้นชี้ • ชื่อ + ระยะ) — เป้าหมายที่เลือกจะเป็นสีทอง
+    local espObjects = {}
+
+    local function removeESP(player)
+        local esp = espObjects[player]
+        if not esp then
+            return
+        end
+        for _, drawing in pairs(esp) do
+            pcall(function()
+                drawing:Remove()
+            end)
+        end
+        espObjects[player] = nil
+    end
+
+    local function clearESP()
+        for player in pairs(espObjects) do
+            removeESP(player)
+        end
+    end
+
+    local function newDrawing(kind, props)
+        local drawing = Drawing.new(kind)
+        for key, value in pairs(props) do
+            drawing[key] = value
+        end
+        return drawing
+    end
+
+    local function getESP(player)
+        local esp = espObjects[player]
+        if not esp then
+            esp = {
+                tracer = newDrawing("Line", { Thickness = 1.5, Visible = false }),
+                box = newDrawing("Square", { Thickness = 1, Filled = false, Visible = false }),
+                name = newDrawing("Text", { Size = 14, Center = true, Outline = true, Visible = false }),
+            }
+            espObjects[player] = esp
+        end
+        return esp
+    end
+
+    local function updateESP(cam)
+        local myRoot = getRoot(LocalPlayer)
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                local esp = getESP(player)
+                local root = getRoot(player)
+                local head = player.Character and player.Character:FindFirstChild("Head")
+                local screenPos, onScreen
+                if root and head then
+                    screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
+                end
+                if onScreen then
+                    local isTarget = player == selectedPlayer
+                    local headPos = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                    local legPos = cam:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+                    local height = math.abs(headPos.Y - legPos.Y)
+                    local width = height / 2
+                    local dist = myRoot and math.floor((myRoot.Position - root.Position).Magnitude) or 0
+
+                    esp.tracer.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
+                    esp.tracer.To = Vector2.new(screenPos.X, screenPos.Y)
+                    esp.tracer.Color = isTarget and TARGET_COLOR or ESP_COLOR
+                    esp.box.Size = Vector2.new(width, height)
+                    esp.box.Position = Vector2.new(screenPos.X - width / 2, headPos.Y)
+                    esp.box.Color = isTarget and TARGET_COLOR or WHITE
+                    esp.name.Text = string.format("%s [%dm]", player.Name, dist)
+                    esp.name.Position = Vector2.new(screenPos.X, headPos.Y - 18)
+                    esp.name.Color = isTarget and TARGET_COLOR or WHITE
+                end
+                esp.tracer.Visible = onScreen == true
+                esp.box.Visible = onScreen == true
+                esp.name.Visible = onScreen == true
+            end
+        end
+    end
+
+    -- คืนกล้องกลับมาที่ตัวเอง (ไม่ยุ่งกับกล้องตอนนั่งยานพาหนะ)
+    local function restoreCamera()
+        local cam = workspace.CurrentCamera
+        local myHumanoid = getHumanoid(LocalPlayer)
+        if not cam or not myHumanoid then
+            return
+        end
+        local subject = cam.CameraSubject
+        if subject == nil or (subject:IsA("Humanoid") and subject ~= myHumanoid) then
+            cam.CameraSubject = myHumanoid
+        end
+    end
+
+    -- ═════════════════════════ หน้า: ผู้เล่น ═════════════════════════
+    local PlayerPage = createPage("Players", Theme.Pink)
+    createPageHeader(PlayerPage, "ผู้เล่น", "มองผู้เล่นทะลุกำแพง สเปคจอ และวาร์ปไปหา", Theme.Pink)
+    createSection(PlayerPage, "มองผู้เล่น (ESP)", Theme.Pink, 1)
+
+    local espToggle
+    espToggle = createToggle(PlayerPage, {
+        name = "PlayerESPBtn",
+        icon = "ESP",
+        title = "ESP ผู้เล่น",
+        desc = "กรอบ • เส้นชี้ • ชื่อ และระยะห่างของทุกคน",
+        accent = Theme.Pink,
+        order = 2,
+        onToggle = function(on)
+            if on and not hasDrawing then
+                espToggle:Set(false, true)
+                notify("ESP ผู้เล่น", "ตัวรันนี้ไม่รองรับ Drawing API", Theme.Crimson, "ESP")
+                setStatus("ESP ใช้ไม่ได้ (ไม่มี Drawing API)", Theme.Crimson)
+                return
+            end
+            getgenv().PlayerESPActive = on
+            if not on then
+                clearESP()
+            end
+            refreshLive()
+            notify("ESP ผู้เล่น", on and "เปิดแล้ว — เป้าหมายจะเป็นสีทอง" or "ปิดใช้งานแล้ว", Theme.Pink, "ESP")
+            setStatus(on and "กำลังแสดง ESP ผู้เล่น" or "ปิด ESP ผู้เล่น", on and Theme.Pink or Theme.Muted)
+        end,
+    })
+
+    createSection(PlayerPage, "เป้าหมาย", TARGET_COLOR, 3)
+    local TargetCard = create("Frame", {
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 68),
+        LayoutOrder = 4,
+        Parent = PlayerPage,
+    })
+    corner(TargetCard, 12)
+    gradient(TargetCard, { Theme.Card:Lerp(TARGET_COLOR, 0.12), Theme.Card }, 0)
+    stroke(TargetCard, TARGET_COLOR, 1, 0.55)
+    local targetAvatar = avatarBubble(TargetCard, 42)
+    targetAvatar.frame.Position = UDim2.fromOffset(12, 13)
+    stroke(targetAvatar.frame, TARGET_COLOR, 1.5, 0)
+    local TargetName = text(TargetCard, {
+        Position = UDim2.fromOffset(64, 14),
+        Size = UDim2.new(1, -180, 0, 18),
+        Text = "",
+        TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local TargetInfo = text(TargetCard, {
+        Position = UDim2.fromOffset(64, 34),
+        Size = UDim2.new(1, -76, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local TargetPill = text(TargetCard, {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 12),
+        Size = UDim2.fromOffset(0, 20),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 0.8,
+        BackgroundColor3 = Theme.Off,
+        Font = Enum.Font.GothamBlack,
+        Text = "",
+        TextSize = 9,
+    })
+    round(TargetPill)
+    create("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = TargetPill })
+
+    local function refreshTarget()
+        local player = selectedPlayer
+        if player then
+            local dist = distanceTo(player)
+            TargetName.Text = player.DisplayName
+            TargetInfo.Text = "@" .. player.Name .. "   •   " .. (dist and studs(dist) or "ไม่พบตัวละคร")
+        else
+            TargetName.Text = "ยังไม่ได้เลือกเป้าหมาย"
+            TargetInfo.Text = "แตะชื่อผู้เล่นในรายชื่อด้านล่างเพื่อเลือก"
+        end
+        local pillText, pillColor
+        if not player then
+            pillText, pillColor = "ยังไม่เลือก", Theme.Muted
+        elseif getgenv().SpectateActive then
+            pillText, pillColor = "กำลังสเปค", TARGET_COLOR
+        else
+            pillText, pillColor = "พร้อม", Theme.Mint
+        end
+        TargetPill.Text = pillText
+        TargetPill.TextColor3 = pillColor:Lerp(WHITE, 0.3)
+        TargetPill.BackgroundColor3 = pillColor
+    end
+
+    local spectateToggle
+    local function setSpectate(on, message)
+        if on and not selectedPlayer then
+            spectateToggle:Set(false, true)
+            notify("สเปคจอ", "เลือกผู้เล่นจากรายชื่อก่อนนะ", Theme.Crimson, "▶")
+            return
+        end
+        getgenv().SpectateActive = on
+        spectateToggle:Set(on, true)
+        if not on then
+            restoreCamera()
+        end
+        refreshLive()
+        refreshTarget()
+        if on then
+            notify("สเปคจอ", "กำลังดูจอของ " .. selectedPlayer.DisplayName, TARGET_COLOR, "▶")
+            setStatus("กำลังสเปคจอ " .. selectedPlayer.DisplayName, TARGET_COLOR)
+        else
+            notify("สเปคจอ", message or "กล้องกลับมาที่ตัวเองแล้ว", Theme.Muted, "▶")
+            setStatus("ปิดการสเปคจอแล้ว", Theme.Muted)
+        end
+    end
+
+    spectateToggle = createToggle(PlayerPage, {
+        name = "SpectateBtn",
+        icon = "▶",
+        title = "สเปคจอ (Spectate)",
+        desc = "ย้ายกล้องไปดูมุมมองของเป้าหมาย",
+        accent = TARGET_COLOR,
+        order = 5,
+        onClick = function()
+            setSpectate(not getgenv().SpectateActive)
+        end,
+    })
+
+    createActionRow(PlayerPage, {
+        icon = "TP",
+        title = "วาร์ปไปหาเป้าหมาย",
+        desc = "ย้ายไปยืนเหนือผู้เล่นที่เลือกไว้",
+        accent = Theme.Cyan,
+        order = 6,
+        callback = function()
+            if not selectedPlayer then
+                notify("วาร์ปหาผู้เล่น", "เลือกผู้เล่นจากรายชื่อก่อนนะ", Theme.Crimson, "TP")
+                return
+            end
+            local myRoot, targetRoot = getRoot(LocalPlayer), getRoot(selectedPlayer)
+            if not myRoot or not targetRoot then
+                notify("วาร์ปหาผู้เล่น", "ไม่พบตัวละครของคุณหรือเป้าหมาย", Theme.Crimson, "TP")
+                setStatus("วาร์ปไม่สำเร็จ • ไม่พบตัวละคร", Theme.Crimson)
+                return
+            end
+            myRoot.CFrame = targetRoot.CFrame + Vector3.new(0, 3, 0)
+            notify("วาร์ปหาผู้เล่น", "วาร์ปไปหา " .. selectedPlayer.DisplayName .. " แล้ว", Theme.Cyan, "TP")
+            setStatus("วาร์ปไปหา " .. selectedPlayer.DisplayName .. " แล้ว", Theme.Cyan)
+        end,
+    })
+
+    -- ─────────── รายชื่อผู้เล่นในเซิร์ฟเวอร์ (อัปเดตอัตโนมัติ) ───────────
+    local PlayerListTitle = createSection(PlayerPage, "ผู้เล่นในเซิร์ฟเวอร์", Theme.Violet, 7)
+    local PlayerList = create("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -10, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 8,
+        Parent = PlayerPage,
+    })
+    create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6), Parent = PlayerList })
+    local PlayerListEmpty = text(PlayerList, {
+        Size = UDim2.new(1, 0, 0, 40),
+        Font = Enum.Font.GothamMedium,
+        Text = "ยังไม่มีผู้เล่นคนอื่นในเซิร์ฟเวอร์",
+        TextColor3 = Theme.Muted,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Center,
+    })
+
+    local function renderPlayerRow(row)
+        local selected = row.player == selectedPlayer
+        local bg = selected and Theme.Card:Lerp(TARGET_COLOR, 0.16) or (row.hovered and Theme.CardHover or Theme.Card)
+        tween(row.button, 0.2, { BackgroundColor3 = bg })
+        tween(row.stroke, 0.25, { Color = selected and TARGET_COLOR or Theme.Stroke, Transparency = selected and 0.15 or 0.35 })
+        row.dist.TextColor3 = selected and TARGET_COLOR or Theme.SubText
+    end
+
+    local function sortPlayerRows()
+        local rows = {}
+        for _, row in pairs(playerRows) do
+            table.insert(rows, row)
+        end
+        table.sort(rows, function(a, b)
+            return a.player.DisplayName:lower() < b.player.DisplayName:lower()
+        end)
+        for i, row in ipairs(rows) do
+            row.button.LayoutOrder = i
+        end
+        PlayerListEmpty.Visible = #rows == 0
+        PlayerListTitle.Text = string.format("ผู้เล่นในเซิร์ฟเวอร์  •  %d คน", #rows)
+    end
+
+    local function selectPlayer(player, silent)
+        selectedPlayer = player
+        showAvatar(targetAvatar, player)
+        for _, row in pairs(playerRows) do
+            renderPlayerRow(row)
+        end
+        if not player and getgenv().SpectateActive then
+            setSpectate(false)
+        end
+        refreshTarget()
+        if silent then
+            return
+        end
+        if player then
+            notify("เลือกเป้าหมาย", player.DisplayName .. "  (@" .. player.Name .. ")", TARGET_COLOR, "◉")
+            setStatus((getgenv().SpectateActive and "กำลังสเปคจอ " or "เป้าหมาย: ") .. player.DisplayName, TARGET_COLOR)
+        else
+            notify("เป้าหมาย", "ยกเลิกการเลือกแล้ว", Theme.Muted, "◉")
+            setStatus("ยกเลิกเป้าหมายแล้ว", Theme.Muted)
+        end
+    end
+
+    local function addPlayerRow(player)
+        if player == LocalPlayer or playerRows[player] then
+            return
+        end
+        local button = create("TextButton", {
+            Name = player.Name,
+            AutoButtonColor = false,
+            Text = "",
+            BackgroundColor3 = Theme.Card,
+            BackgroundTransparency = 0.08,
+            Size = UDim2.new(1, 0, 0, 46),
+            Parent = PlayerList,
+        })
+        corner(button, 10)
+        local rowStroke = stroke(button, Theme.Stroke, 1, 0.35)
+        attachRipple(button, function()
+            return TARGET_COLOR
+        end)
+        local avatar = avatarBubble(button, 32)
+        avatar.frame.Position = UDim2.fromOffset(10, 7)
+        showAvatar(avatar, player)
+        text(button, {
+            Position = UDim2.fromOffset(52, 7),
+            Size = UDim2.new(1, -150, 0, 18),
+            Text = player.DisplayName,
+            TextSize = 12,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        text(button, {
+            Position = UDim2.fromOffset(52, 24),
+            Size = UDim2.new(1, -150, 0, 14),
+            Font = Enum.Font.GothamMedium,
+            Text = "@" .. player.Name,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local distLabel = text(button, {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0),
+            Size = UDim2.fromOffset(86, 16),
+            Text = "--",
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Right,
+        })
+
+        local row = { player = player, button = button, stroke = rowStroke, dist = distLabel, hovered = false }
+        button.MouseEnter:Connect(function()
+            row.hovered = true
+            renderPlayerRow(row)
+        end)
+        button.MouseLeave:Connect(function()
+            row.hovered = false
+            renderPlayerRow(row)
+        end)
+        button.MouseButton1Click:Connect(function()
+            -- แตะคนเดิมซ้ำ = ยกเลิกการเลือก
+            selectPlayer(selectedPlayer ~= player and player or nil)
+        end)
+        playerRows[player] = row
+        renderPlayerRow(row)
+        sortPlayerRows()
+    end
+
+    local function removePlayerRow(player)
+        removeESP(player)
+        local row = playerRows[player]
+        if row then
+            row.button:Destroy()
+            playerRows[player] = nil
+        end
+        if player == selectedPlayer then
+            if getgenv().SpectateActive then
+                setSpectate(false, player.DisplayName .. " ออกจากเซิร์ฟแล้ว")
+            else
+                notify("เป้าหมาย", player.DisplayName .. " ออกจากเซิร์ฟแล้ว", Theme.Muted, "◉")
+            end
+            selectPlayer(nil, true)
+        end
+        sortPlayerRows()
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        addPlayerRow(player)
+    end
+    sortPlayerRows()
+    refreshTarget()
+    Players.PlayerAdded:Connect(function(player)
+        if alive() then
+            addPlayerRow(player)
+        end
+    end)
+    Players.PlayerRemoving:Connect(function(player)
+        if alive() then
+            removePlayerRow(player)
+        end
+    end)
+
+    -- อัปเดตระยะห่างในรายชื่อและการ์ดเป้าหมาย
+    task.spawn(function()
+        while alive() and ScreenGui.Parent do
+            task.wait(0.5)
+            for player, row in pairs(playerRows) do
+                local dist = distanceTo(player)
+                row.dist.Text = dist and studs(dist) or "--"
+            end
+            refreshTarget()
+        end
+    end)
+
+    -- เรียกทุกเฟรมจากลูปหลัก: ล็อกกล้องสเปค (ตามต่อได้แม้เป้าหมายเกิดใหม่) + วาด ESP
+    function updatePlayerTools(camera)
+        if getgenv().SpectateActive then
+            local targetHumanoid = getHumanoid(selectedPlayer)
+            if targetHumanoid and camera.CameraSubject ~= targetHumanoid then
+                camera.CameraSubject = targetHumanoid
+            end
+        end
+        if getgenv().PlayerESPActive then
+            pcall(updateESP, camera)
+        end
+    end
+
+    -- เก็บกวาดตอนรันสคริปต์ใหม่/ปิดเมนู: ลบ ESP และคืนกล้อง
+    function stopPlayerTools()
+        clearESP()
+        restoreCamera()
+    end
+end
+
 -- ═════════════════════════ แท็บด้านข้าง ═════════════════════════
 local TABS = {
     { id = "Farm", name = "ฟาร์ม", sub = "ขุด • เคลื่อนที่", icon = "▼", accent = Theme.Crimson },
     { id = "Shop", name = "ร้านค้า", sub = "ขาย • อัปเกรด", icon = "$", accent = Theme.Gold },
     { id = "Warp", name = "วาร์ป", sub = "จุดวาร์ป", icon = "TP", accent = Theme.Cyan },
     { id = "Radar", name = "เรดาร์", sub = "สแกนแร่", icon = "◎", accent = Theme.Violet },
+    { id = "Players", name = "ผู้เล่น", sub = "ESP • สเปคจอ", icon = "◉", accent = Theme.Pink },
 }
 local TAB_H, TAB_GAP = 44, 5
 
@@ -2431,6 +2974,7 @@ renderConnection = RunService.RenderStepped:Connect(function(dt)
     if not alive() or not ScreenGui.Parent then
         renderConnection:Disconnect()
         stopRadar()
+        stopPlayerTools()
         return
     end
 
@@ -2465,6 +3009,11 @@ renderConnection = RunService.RenderStepped:Connect(function(dt)
                 humanoid.WalkSpeed = getgenv().CustomWalkSpeed
             end
         end
+    end
+
+    -- สเปคจอ + ESP ผู้เล่น
+    if workspace.CurrentCamera then
+        updatePlayerTools(workspace.CurrentCamera)
     end
 
     if not getgenv().ActiveRadarId or not radarState then return end
