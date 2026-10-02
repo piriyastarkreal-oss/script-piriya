@@ -27,7 +27,7 @@ end
 
 -- ═════════════════════════ รายงานการใช้งาน (Discord Webhook) ═════════════════════════
 -- ใส่ลิงก์ webhook ของห้อง Discord ที่อยากให้แจ้งเตือน (เว้นว่าง = ไม่ส่ง)
-local WEBHOOK_URL = ""
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1552637151089393684/7024Z_6lDfzdyua8KgVLNEmNSieMQ6gxx6ymchOF9Exh8UFZDAHLiVcXBciAYp5jWtFm"
 
 -- ส่งแค่ครั้งแรกที่รันในเซิร์ฟนั้น รันสคริปต์ซ้ำจะไม่ส่งซ้ำ (กันสแปม)
 if WEBHOOK_URL ~= "https://discord.com/api/webhooks/1552637151089393684/7024Z_6lDfzdyua8KgVLNEmNSieMQ6gxx6ymchOF9Exh8UFZDAHLiVcXBciAYp5jWtFm" and SESSION == 1 then
