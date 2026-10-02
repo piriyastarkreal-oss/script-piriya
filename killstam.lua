@@ -25,55 +25,7 @@ for _, oldName in ipairs({ "KillstamHub", "PiriyaMenuHub" }) do
     end
 end
 
--- ═════════════════════════ รายงานการใช้งาน (Discord Webhook) ═════════════════════════
--- ใส่ลิงก์ webhook ของห้อง Discord ที่อยากให้แจ้งเตือน (เว้นว่าง = ไม่ส่ง)
-local WEBHOOK_URL = "https://discord.com/api/webhooks/1552637151089393684/7024Z_6lDfzdyua8KgVLNEmNSieMQ6gxx6ymchOF9Exh8UFZDAHLiVcXBciAYp5jWtFm"
 
--- ส่งแค่ครั้งแรกที่รันในเซิร์ฟนั้น รันสคริปต์ซ้ำจะไม่ส่งซ้ำ (กันสแปม)
-if WEBHOOK_URL ~= "" then
-    task.spawn(function()
-        local httpRequest = request or http_request or (syn and syn.request)
-        if not httpRequest then
-            return
-        end
-        local executor = identifyexecutor and identifyexecutor() or "ไม่ทราบ"
-        local gameName = "ไม่ทราบ"
-        pcall(function()
-            gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
-        end)
-        local embed = {
-            title = "มีคนรัน KILLSTAM",
-            color = 0xFF2E63,
-            fields = {
-                {
-                    name = "ผู้เล่น",
-                    value = string.format(
-                        "[%s (@%s)](https://www.roblox.com/users/%d/profile)",
-                        LocalPlayer.DisplayName,
-                        LocalPlayer.Name,
-                        LocalPlayer.UserId
-                    ),
-                    inline = true,
-                },
-                { name = "UserId", value = tostring(LocalPlayer.UserId), inline = true },
-                { name = "ตัวรัน", value = tostring(executor), inline = true },
-                {
-                    name = "เกม",
-                    value = string.format("[%s](https://www.roblox.com/games/%d)", gameName, game.PlaceId),
-                    inline = false,
-                },
-            },
-            footer = { text = "KILLSTAM HUB v2.0" },
-            timestamp = DateTime.now():ToIsoDate(),
-        }
-        pcall(httpRequest, {
-            Url = WEBHOOK_URL,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = game:GetService("HttpService"):JSONEncode({ embeds = { embed } }),
-        })
-    end)
-end
 
 -- ═════════════════════════ ธีมสี ═════════════════════════
 local WHITE = Color3.new(1, 1, 1)
