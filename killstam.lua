@@ -1521,6 +1521,35 @@ createActionCard(WarpGrid, {
         refreshWarp()
     end,
 })
+createActionCard(WarpGrid, {
+    name = "MeteorWarpBtn",
+    icon = "M",
+    title = "วาปอุกกาบาต",
+    desc = "ไปยังตำแหน่งที่อุกกาบาตตก",
+    accent = Theme.Ember,
+    order = 3,
+    callback = function()
+        local character = LocalPlayer.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local meteorRemotes = ReplicatedStorage:FindFirstChild("MeteorRemotes")
+        local impactPos = meteorRemotes and meteorRemotes:FindFirstChild("ImpactPos")
+        if not rootPart then
+            notify("วาปอุกกาบาต", "ไม่พบตัวละครหรือ HumanoidRootPart", Theme.Crimson, "M")
+            setStatus("ไม่พบตัวละคร", Theme.Crimson)
+            return
+        end
+        if not impactPos or not impactPos:IsA("Vector3Value") then
+            notify("วาปอุกกาบาต", "ยังไม่มีพิกัดอุกกาบาต", Theme.Crimson, "M")
+            setStatus("ยังไม่มีพิกัดอุกกาบาต", Theme.Crimson)
+            return
+        end
+
+        local targetPos = impactPos.Value + Vector3.new(0, 10, 0)
+        rootPart.CFrame = CFrame.new(targetPos)
+        notify("วาปอุกกาบาต", "ย้ายไปยังจุดตกแล้ว", Theme.Ember, "M")
+        setStatus("วาปไปยังตำแหน่งอุกกาบาตแล้ว", Theme.Ember)
+    end,
+})
 
 -- ═════════════════════════ ระบบเรดาร์ ═════════════════════════
 local RadarData = {
