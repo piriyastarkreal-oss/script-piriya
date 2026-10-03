@@ -1,0 +1,3667 @@
+-- ==========================================
+-- SMART AUTO FISH (v7)
+-- ------------------------------------------
+-- Panel: the KILLSTAM hub's look. Tabs on the left (fishing / shops / other), a LIVE
+-- list of what is on, notices that slide in at the top. RightShift or the floating
+-- SMART FISH button hides and shows it, the x button hides it, and "stop script"
+-- on the third tab stops the script (the game's own auto fishing is left as it is).
+-- Written against the game's own client code (see Modules/AutoFishing_lua,
+-- Modules/ThrowCinematic_lua, Modules/HookMeter_lua, Modules/FishTag_lua,
+-- Modules/ThrowRod_lua, Modules/Settings_lua, Modules/Upgrades_lua, Modules/Rods_lua,
+-- Modules/Baits_lua, Modules/ConsumeBait_lua, Modules/NPC_Sell_lua, Modules/Touch_UI_lua,
+-- Modules/IdleRejoin_lua):
+--   * Auto Fish     -> runs the game's built-in auto fishing loop (cast, aim, catch,
+--                      reel), started with the same AutoFishing:Toggle() call as its
+--                      own footer button.
+--   * Perfect Cast  -> the built-in auto releases the cast at a random spot on the
+--                      hook meter. This waits until the arrow is in the middle of the
+--                      green zone (the spot the game itself draws as "Perfect") and
+--                      releases there, every cast.
+--   * Best Fish     -> aims at the most expensive fish instead of a random one, priced
+--                      with the same GetSellValue call as the $ tags on the fish.
+--   * Quick Reel    -> the game only reels in once the hook is full or nothing is left
+--                      above it. This reels in as soon as the most expensive fish is on
+--                      the hook, staying only for finds and for fish worth at least a
+--                      quarter of it.
+--   * Skip Cutscene -> sets the game's own Settings > "Rare Catch Cutscene" to None, so
+--                      rare catches skip the showcase. It is a saved game setting: it
+--                      stays after the panel is closed (this button or the game's
+--                      Settings menu turns it back on).
+--   * Auto Upgrade  -> in the rod / upgrade shop, with cash (never Robux): buys the
+--                      luckiest rod you can afford that beats yours and equips it, and
+--                      the upgrades (Capacity / Strength / Weight / Bounce), cheapest first.
+--   * Auto Bait     -> keeps a bait active by using the best bait you own; in the bait
+--                      shop it buys up to 20, each costing at most a fifth of what its 5
+--                      casts usually catch, and on a Sell Trip at most a fifth of what
+--                      the trip sold (the rest is saved up for rods and upgrades).
+--   * Sell Trip     -> once 250 unlocked fish are in the bag (or it is full), walks to the
+--                      sell NPC and uses its "Sell All Fish", walks through the shops that
+--                      have something to buy, then back to the water and fishes on.
+--                      It walks like you would (no teleporting); the game sells instant
+--                      selling as its "Auto Sell" gamepass, which this does not copy.
+--   * Overnight     -> after 15 minutes without input the game moves you to a server
+--                      (IdleRejoin). Put this file in Volt's autoexec folder so it runs
+--                      again there; it then walks back to the water and fishes on.
+--   * Auto Fight    -> plays the "Click Fast" catch fight for rare fish, under the
+--                      game's own CatchFight.MaxClickRate.
+--   * Rod           -> puts your rod back in your hand while auto fishing is on.
+-- The server times every throw itself (flight, dive, catch window, return) and only
+-- pays for fish hooked during the catch window, so a cast cannot be skipped outright;
+-- Quick Reel and Skip Cutscene cut the waiting inside it.
+-- Needs: Level 5 (the game's rule) and standing at the water.
+-- Nothing on screen? Look in the Volt console (not Roblox F9) for lines starting with [SmartAutoFish].
+-- ==========================================
+
+local function say(text)
+    print("[SmartAutoFish] " .. text)
+end
+
+local toastHook -- set once the panel is up: notices then show inside it
+
+local function notify(text)
+    if toastHook and pcall(toastHook, text) then
+        return
+    end
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Smart Auto Fish",
+            Text = text,
+            Duration = 6,
+        })
+    end)
+end
+
+-- First sign of life: if you see neither this message nor the toast, the script did not run at all.
+say("script started")
+notify("script started - the panel appears at the top-left")
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local GuiService = game:GetService("GuiService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PathfindingService = game:GetService("PathfindingService")
+local TeleportService = game:GetService("TeleportService")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.1)
+    LocalPlayer = Players.LocalPlayer
+end
+
+local env = (getgenv and getgenv()) or _G
+local traceback = (debug and debug.traceback) or tostring
+
+local VirtualInputManager
+do
+    local ok, service = pcall(game.GetService, game, "VirtualInputManager")
+    if ok then
+        VirtualInputManager = service
+    end
+end
+
+-- Re-running the script replaces the previous copy instead of stacking loops.
+if env.__SmartAutoFishStop then
+    pcall(env.__SmartAutoFishStop)
+    env.__SmartAutoFishStop = nil
+end
+
+local GUI_NAME = "DeepFishingSpeedControl"
+local HUB_TITLE = "SMART FISH" -- name on the banner and the floating button
+local STATUS_PREFIX = "สถานะ: "
+local AUTO_UNLOCK_LEVEL = 5 -- AutoFishing:Toggle() refuses below this level
+
+-- ------------------------------------------
+-- State
+-- ------------------------------------------
+local alive = true
+local connections = {}
+local function track(connection)
+    connections[#connections + 1] = connection
+    return connection
+end
+
+local perfectCast = true
+local bestFirst = true
+local quickReel = true
+local autoUpgrade = true
+local autoBait = true
+local sellTrip = true
+local fightEnabled = true
+
+local KEEP_RATIO = 0.25 -- with a fish on the hook, Quick Reel only stays for fish worth at least this share of it
+local REEL_MARGIN = 0.5 -- seconds; the last moments of the catch window are left to the game
+local SHOP_INTERVAL = 2 -- seconds between shopping checks (only between casts)
+local CONFIRM_TIMEOUT = 3 -- seconds to wait for the game to confirm a purchase
+local BAIT_CHARGES = 5 -- casts one bait lasts (ConsumeBait adds 5 per bait)
+local BAIT_SHARE = 0.2 -- a bait may cost at most this share of what its casts are expected to catch
+local BAITS_PER_TRIP = 20 -- baits to have in the bag when leaving the bait shop (about 100 casts)
+local SELL_AT = 250 -- unlocked fish in the bag that start a Sell Trip (the bag holds 2500)
+local SELL_RANGE = 8 -- studs from the sell NPC to sell from; its Talk prompt reaches 12
+local WALK_TIMEOUT = 90 -- seconds for one walk (water -> NPC, NPC -> shop, shop -> water)
+local CUTSCENE_SETTING = "RareCutscene" -- Settings > "Rare Catch Cutscene": All / Exclusive / Exotic / None
+
+local MIN_CPS = 4
+local MAX_CPS = 12
+local clicksPerSecond = 8
+pcall(function()
+    local CatchFight = require(ReplicatedStorage.Shared.Modules.CatchFight)
+    if type(CatchFight.MaxClickRate) == "number" then
+        MAX_CPS = math.max(MIN_CPS, math.floor(CatchFight.MaxClickRate))
+    end
+end)
+clicksPerSecond = math.min(clicksPerSecond, MAX_CPS)
+
+-- The game's own functions we stand in for; put back when a feature is turned off or the panel closes.
+local originalDriveCast -- AutoFishing.DriveCast: releases the cast at a random arrow position
+local originalPickTarget -- AutoFishing.PickTarget: picks a random fish
+local hookMeter, originalRenderArrow -- HUD HookMeter.RenderArrow: draws the arrow every frame while charging
+
+local Fishing, AutoFishing, Throw -- filled in by bindGame()
+local StatusLabel -- set once the panel exists, so later failures can still be shown on screen
+
+local function reportError(where, err)
+    warn("[SmartAutoFish] error in " .. where .. ":\n" .. tostring(err))
+    notify("error in " .. where .. " - details in the Volt console")
+    if StatusLabel then
+        pcall(function()
+            StatusLabel.Text = STATUS_PREFIX .. "error in " .. where
+        end)
+    end
+end
+
+local function spawnGuarded(where, fn)
+    task.spawn(function()
+        local ok, err = xpcall(fn, function(e)
+            return traceback(tostring(e), 2)
+        end)
+        if not ok then
+            reportError(where, err)
+        end
+    end)
+end
+
+local function executorName()
+    if identifyexecutor then
+        local ok, name, version = pcall(identifyexecutor)
+        if ok then
+            return tostring(name) .. " " .. tostring(version or "")
+        end
+    end
+    return "unknown"
+end
+
+-- ------------------------------------------
+-- Hooking into the game's controllers
+-- ------------------------------------------
+local function bindGame()
+    local scripts = LocalPlayer:WaitForChild("PlayerScripts", 15)
+    local client = scripts and scripts:WaitForChild("Client", 15)
+    local controllers = client and client:WaitForChild("Controllers", 15)
+    if not controllers then
+        return false, "PlayerScripts.Client.Controllers not found"
+    end
+
+    local fishingModule = controllers:WaitForChild("Fishing", 15)
+    local throwModule = controllers:WaitForChild("ThrowCinematic", 15)
+    if not (fishingModule and throwModule) then
+        return false, "Fishing / ThrowCinematic controller not found"
+    end
+
+    local okF, fishing = pcall(require, fishingModule)
+    if not okF then
+        return false, "require(Fishing) failed: " .. tostring(fishing)
+    end
+    local okT, throw = pcall(require, throwModule)
+    if not okT then
+        return false, "require(ThrowCinematic) failed: " .. tostring(throw)
+    end
+    if type(fishing) ~= "table" or type(throw) ~= "table" then
+        return false, "controllers did not return tables"
+    end
+
+    -- The game attaches AutoFishing / Sub once its controllers finish booting
+    -- (slower right after a rejoin). AutoFishing.Controllers only resolves on the
+    -- live module, so it also tells us require() gave us the game's table and not a fresh copy.
+    local deadline = os.clock() + 60
+    local auto
+    while alive and os.clock() < deadline do
+        local ok, found = pcall(function()
+            local candidate = rawget(fishing, "AutoFishing")
+            if candidate and rawget(throw, "Sub") and candidate.Controllers ~= nil then
+                return candidate
+            end
+            return nil
+        end)
+        if ok and found then
+            auto = found
+            break
+        end
+        task.wait(0.25)
+    end
+    if not auto then
+        return false, "AutoFishing controller never became ready"
+    end
+
+    Fishing, AutoFishing, Throw = fishing, auto, throw
+    return true
+end
+
+local function isAutoOn()
+    return AutoFishing ~= nil and AutoFishing.On == true
+end
+
+local function isFightActive()
+    if not Throw then
+        return false
+    end
+    local ok, active = pcall(function()
+        return Throw.Sub.CatchMinigame:IsActive()
+    end)
+    return ok and active == true
+end
+
+local function playerLevel()
+    local ok, level = pcall(function()
+        return tonumber(AutoFishing.PlayerData:Get().Level)
+    end)
+    if ok then
+        return level
+    end
+    return nil
+end
+
+-- The HUD "Fishing" module (hook meter, catch fight bar). ThrowCinematic only keeps
+-- it in FishingHUD while a throw is in the air, so ask the UI manager otherwise.
+local function fishingHUD()
+    local ok, hud = pcall(function()
+        return Throw.FishingHUD or Throw.UI:Get("Fishing")
+    end)
+    if ok and type(hud) == "table" then
+        return hud
+    end
+    return nil
+end
+
+local function shortMoney(amount)
+    for _, unit in ipairs({{1e12, "T"}, {1e9, "B"}, {1e6, "M"}, {1e3, "K"}}) do
+        if amount >= unit[1] then
+            return string.format("$%.1f%s", amount / unit[1], unit[2])
+        end
+    end
+    return "$" .. tostring(math.floor(amount))
+end
+
+-- ------------------------------------------
+-- Perfect Cast: release inside the green zone
+-- ------------------------------------------
+local METER_TIMEOUT = 1.5 -- no arrow drawn this long after the charge starts: the meter is hidden, stop waiting
+local CAST_TIMEOUT = 6
+
+local arrow = {seq = 0, t = nil, tier = nil} -- last arrow position (0..1) and tier the game drew
+local greenZone = {lo = math.huge, hi = -math.huge, samples = 0} -- arrow positions drawn as "Perfect", learned while playing
+local castStats = {casts = 0, perfect = 0}
+local warnedHiddenMeter = false
+
+-- Sits in front of HookMeter:RenderArrow and only records what the game draws.
+-- Each wrapper keeps its own original, so a stale reference can never call nil.
+local function makeArrowWatch(render)
+    return function(self, t, tier, ...)
+        arrow.seq = arrow.seq + 1
+        arrow.t = t
+        arrow.tier = tier
+        return render(self, t, tier, ...)
+    end
+end
+
+local function removeArrowWatch()
+    if hookMeter and originalRenderArrow then
+        pcall(rawset, hookMeter, "RenderArrow", originalRenderArrow)
+    end
+    hookMeter, originalRenderArrow = nil, nil
+end
+
+local function installArrowWatch()
+    if hookMeter then
+        return true
+    end
+    local meter
+    local hud = fishingHUD()
+    if hud and type(hud.Sub) == "table" and type(hud.Sub.HookMeter) == "table" then
+        meter = hud.Sub.HookMeter
+    else
+        local ok, found = pcall(function()
+            return require(ReplicatedStorage.Shared.UI.HUD.Fishing.HookMeter)
+        end)
+        meter = ok and type(found) == "table" and found or nil
+    end
+    local render = meter and rawget(meter, "RenderArrow")
+    if type(render) ~= "function" then
+        return false
+    end
+    hookMeter, originalRenderArrow = meter, render
+    rawset(meter, "RenderArrow", makeArrowWatch(render))
+    return true
+end
+
+-- Release in the middle of the green zone. If the arrow is too fast to land in the
+-- middle, take any Perfect frame once it has gone through the zone twice.
+local function shouldRelease(t, tier, passes)
+    if tier ~= "Perfect" then
+        return false
+    end
+    if greenZone.samples >= 3 and greenZone.hi > greenZone.lo then
+        local middle = (greenZone.lo + greenZone.hi) / 2
+        local half = (greenZone.hi - greenZone.lo) / 2
+        if math.abs(t - middle) <= half * 0.7 then
+            return true
+        end
+    end
+    return passes >= 2
+end
+
+-- HookT = where the arrow was when released; the game's own auto sets it the same way right before StopHook.
+local function releaseAt(fishing, t)
+    fishing.HookT = t
+    fishing:StopHook()
+    castStats.casts = castStats.casts + 1
+    if fishing.ThrowTier == "Perfect" then
+        castStats.perfect = castStats.perfect + 1
+    end
+end
+
+local function perfectCastBody(self, fishing)
+    installArrowWatch()
+    self.DrivingThrow = true
+    local startSeq = arrow.seq
+    fishing:StartHook()
+    if not fishing.Charging then
+        self.DrivingThrow = false
+        return
+    end
+
+    local started = os.clock()
+    local lastSeq = startSeq
+    local inZone, passes = false, 0
+    while fishing.Charging and alive do
+        RunService.Heartbeat:Wait()
+        local elapsed = os.clock() - started
+        if arrow.seq ~= lastSeq then
+            lastSeq = arrow.seq
+            local t, tier = arrow.t, arrow.tier
+            if type(t) == "number" then
+                if tier == "Perfect" then
+                    greenZone.lo = math.min(greenZone.lo, t)
+                    greenZone.hi = math.max(greenZone.hi, t)
+                    greenZone.samples = greenZone.samples + 1
+                    inZone = true
+                elseif inZone then
+                    inZone = false
+                    passes = passes + 1
+                end
+                if shouldRelease(t, tier, passes) then
+                    releaseAt(fishing, t)
+                    return
+                end
+            end
+        elseif lastSeq == startSeq and elapsed > METER_TIMEOUT then
+            -- Nothing drawn through our watch: maybe the wrong HUD table. Look it up again next cast.
+            removeArrowWatch()
+            if not warnedHiddenMeter then
+                warnedHiddenMeter = true
+                warn("[SmartAutoFish] hook meter arrow not seen this cast - released like the game does, will retry")
+            end
+            break
+        end
+        if elapsed > CAST_TIMEOUT then
+            break
+        end
+    end
+
+    -- Meter never showed up, the zone was never reached, or the panel was closed: release like the game does.
+    if fishing.Charging then
+        releaseAt(fishing, math.random())
+    end
+end
+
+-- Stands in for AutoFishing:DriveCast, which the game's auto loop calls for every cast.
+local function perfectDriveCast(self, fishing)
+    local ok, err = pcall(perfectCastBody, self, fishing)
+    if not ok then
+        warn("[SmartAutoFish] Perfect Cast failed, releasing like the game does: " .. tostring(err))
+        pcall(function()
+            if fishing.Charging then
+                fishing.HookT = math.random()
+                fishing:StopHook()
+            end
+        end)
+    end
+end
+
+local function setPerfectCast(on)
+    perfectCast = on
+    if not AutoFishing then
+        return -- applied once bindGame() finds the controllers
+    end
+    if originalDriveCast == nil then
+        originalDriveCast = rawget(AutoFishing, "DriveCast")
+    end
+    if originalDriveCast ~= nil then
+        rawset(AutoFishing, "DriveCast", on and perfectDriveCast or originalDriveCast)
+    end
+    if on then
+        installArrowWatch()
+    end
+end
+
+-- ------------------------------------------
+-- Best Fish: aim at the most expensive fish
+-- ------------------------------------------
+local valueCache = setmetatable({}, {__mode = "k"})
+
+-- The price the game prints on the fish's tag (FishTag.PriceFor), cached per fish.
+local function fishValue(fish)
+    local mutation = fish.pendingMutation or fish.mutation
+    local cached = valueCache[fish]
+    if cached and cached.mutation == mutation then
+        return cached.value
+    end
+    local ok, value = pcall(function()
+        return Throw.Services.Item:GetSellValue(LocalPlayer, {
+            Type = "Fish",
+            Name = fish.name,
+            Data = {Size = fish.size or 1, Mutation = mutation},
+        })
+    end)
+    if not ok or type(value) ~= "number" or value <= 0 then
+        value = nil
+    end
+    valueCache[fish] = {value = value, mutation = mutation}
+    return value
+end
+
+-- Price of the most expensive fish already on the hook this cast, or nil if none yet.
+-- Finds (keys, scrolls, chests) are not fish and have no price.
+local function bestHookedValue(fishList)
+    local best
+    for _, fish in ipairs(fishList) do
+        if fish.caught and not fish.special then
+            local value = fishValue(fish)
+            if value and (best == nil or value > best) then
+                best = value
+            end
+        end
+    end
+    return best
+end
+
+-- Once a fish worth `hooked` is on the hook, only finds (they take no hook slot) and
+-- fish worth at least KEEP_RATIO of it are worth the slow pull-up.
+local function worthStaying(fish, value, hooked)
+    if hooked == nil or fish.special then
+        return true
+    end
+    return value ~= nil and value >= hooked * KEEP_RATIO
+end
+
+-- With Quick Reel on, what the hook already holds limits which fish are still targets.
+local function quickReelFloor(fishList)
+    if quickReel then
+        return bestHookedValue(fishList)
+    end
+    return nil
+end
+
+-- The reachable fish worth the most. The game's own rarity/mutation score breaks
+-- ties and ranks fish without a price (sell value lookup failed or not for sale).
+-- With `hooked` given, fish not worth staying for are left out.
+local function mostValuable(autoFishing, fishList, hangY, hooked)
+    local best, bestValue, bestScore
+    for _, fish in ipairs(fishList) do
+        if autoFishing:TargetValid(fish, hangY) then
+            local price = fishValue(fish)
+            if worthStaying(fish, price, hooked) then
+                local value = price or -1
+                local score = tonumber(fish.markerScore) or 0
+                if not best or value > bestValue or (value == bestValue and score > bestScore) then
+                    best, bestValue, bestScore = fish, value, score
+                end
+            end
+        end
+    end
+    return best, bestValue
+end
+
+-- Stands in for AutoFishing:PickTarget, which the game's Steer calls whenever it needs a new target.
+local function pickMostValuable(self, fishList, hangY)
+    local ok, best = pcall(function()
+        return (mostValuable(self, fishList, hangY, quickReelFloor(fishList)))
+    end)
+    if ok then
+        return best
+    end
+    return originalPickTarget(self, fishList, hangY)
+end
+
+local function setBestFirst(on)
+    bestFirst = on
+    if not AutoFishing then
+        return -- applied once bindGame() finds the controllers
+    end
+    if originalPickTarget == nil then
+        originalPickTarget = rawget(AutoFishing, "PickTarget")
+    end
+    if originalPickTarget ~= nil then
+        rawset(AutoFishing, "PickTarget", on and pickMostValuable or originalPickTarget)
+    end
+end
+
+-- The game only picks a new target once the current one is caught or passed;
+-- switch early when a pricier fish is in reach (e.g. one that spawned mid-throw).
+local function upgradeTarget()
+    if not bestFirst or not isAutoOn() or not AutoFishing.DrivingThrow then
+        return
+    end
+    if not Throw.Active or not Throw.Catchable or Throw.CatchWindowOver or isFightActive() then
+        return
+    end
+    local school = Throw.Sub and Throw.Sub.FishSchool
+    local fishList = school and school.Fish
+    local hang = Throw.HangPoint
+    if not fishList or not hang then
+        return
+    end
+    local hooked = quickReelFloor(fishList)
+    local best, bestValue = mostValuable(AutoFishing, fishList, hang.Y, hooked)
+    local current = AutoFishing.Target
+    if not best or best == current then
+        return
+    end
+    local currentValue = -math.huge
+    if current and AutoFishing:TargetValid(current, hang.Y) then
+        local price = fishValue(current)
+        if worthStaying(current, price, hooked) then
+            currentValue = price or -1
+        end
+    end
+    if bestValue > currentValue then
+        AutoFishing.Target = best
+    end
+end
+
+-- ------------------------------------------
+-- Quick Reel: reel in once the best fish is on
+-- ------------------------------------------
+local quickReelLogged = false
+
+-- The game reels in by itself only when the hook is full or nothing is left above
+-- it; until then the hook rides the slow pull-up past cheap fish. The server lets a
+-- reel happen any time in the catch window (it is the game's own End Run button).
+local function quickReelCheck()
+    if not quickReel or not isAutoOn() or not AutoFishing.DrivingThrow then
+        return
+    end
+    if not Throw.Active or not Throw.Catchable or type(Throw.PullStart) ~= "number" then
+        return
+    end
+    if Throw.CatchWindowOver or Throw.ReelRequested or Throw.EarlyOutPending or isFightActive() then
+        return
+    end
+    local pullUp = tonumber(Throw.PullUpDuration)
+    if pullUp and os.clock() > Throw.PullStart + pullUp - REEL_MARGIN then
+        return -- the catch window closes by itself in a moment
+    end
+    local school = Throw.Sub and Throw.Sub.FishSchool
+    local fishList = school and school.Fish
+    local hang = Throw.HangPoint
+    if not fishList or not hang then
+        return
+    end
+    local hooked = bestHookedValue(fishList)
+    if not hooked or mostValuable(AutoFishing, fishList, hang.Y, hooked) then
+        return -- nothing on the hook yet, or something worth the pull-up is still in reach
+    end
+    -- The End Run button when the game shows it (long casts; it reels in faster),
+    -- otherwise the reel call the game makes itself when the hook is full.
+    local leftHUD = Throw.LeftHUD
+    if type(leftHUD) == "table" and leftHUD.EndRunWanted == true then
+        Throw:EndRunPressed()
+    else
+        Throw:RequestReel()
+    end
+    if not quickReelLogged then
+        quickReelLogged = true
+        say(string.format("Quick Reel: reeled in early with %s on the hook", shortMoney(hooked)))
+    end
+end
+
+-- ------------------------------------------
+-- The game's own network events
+-- ------------------------------------------
+-- Events.Client(name) waits forever for a name the game does not have, so check first.
+local function gameEvent(name)
+    local folder = ReplicatedStorage:FindFirstChild("Events")
+    local events = folder and folder:FindFirstChild("RemoteEvents")
+    local functions = folder and folder:FindFirstChild("RemoteFunctions")
+    local known = (events and events:FindFirstChild(name)) or (functions and functions:FindFirstChild(name))
+    if not known then
+        error("the game has no event named " .. name, 2)
+    end
+    return Throw.Events.Client(name)
+end
+
+local scriptFiring = false -- true while this script fires an event, so the shop watch can tell its calls from the game's
+
+-- Same call the game's own buttons make: Events.Client(name):Fire(true, ...).
+local function fireGame(name, ...)
+    local event = gameEvent(name)
+    scriptFiring = true
+    local ok, err = pcall(event.Fire, event, true, ...)
+    scriptFiring = false
+    if not ok then
+        error(err, 0)
+    end
+end
+
+-- Same call the game makes for a request that answers back: Events.Client(name):Invoke(5, ...).
+local function invokeGame(name, ...)
+    local event = gameEvent(name)
+    scriptFiring = true
+    local ok, result = pcall(event.Invoke, event, 5, ...)
+    scriptFiring = false
+    if not ok then
+        error(result, 0)
+    end
+    return result
+end
+
+-- ------------------------------------------
+-- Skip Cutscene: the game's "Rare Catch Cutscene" setting
+-- ------------------------------------------
+local cutsceneRestore = "All" -- what turning Skip Cutscene off puts back (the game's default)
+
+local function cutsceneSetting()
+    local ok, value = pcall(function()
+        return AutoFishing.PlayerData:Get().Settings[CUTSCENE_SETTING]
+    end)
+    if ok and type(value) == "string" then
+        return value
+    end
+    return nil
+end
+
+-- Sends the same event the game's Settings menu fires for "Rare Catch Cutscene".
+-- The game saves it to your profile; the panel shows it once the game confirms.
+local function setCutsceneSkipped(skip)
+    local current = cutsceneSetting()
+    if current == nil then
+        return false
+    end
+    if current ~= "None" then
+        cutsceneRestore = current
+    end
+    if (current == "None") == skip then
+        return true
+    end
+    fireGame("Settings", CUTSCENE_SETTING, skip and "None" or cutsceneRestore)
+    return true
+end
+
+-- ------------------------------------------
+-- Walking: the character walks like a player does (no teleporting)
+-- ------------------------------------------
+local walkCancelled = false -- set when Sell Trip is switched off or the panel closes
+
+local function liveWorld()
+    local container = workspace:FindFirstChild("World")
+    if not container then
+        return nil
+    end
+    for _, world in ipairs(container:GetChildren()) do
+        if world:FindFirstChild("Interactable") then
+            return world
+        end
+    end
+    return nil
+end
+
+-- Workspace.World.<current world>.Interactable.<name>, found the way the game's
+-- WorldFolder finds it: the sell NPC, the Upgrades / Rods / Baits shop zones, the Throw area.
+local function interactable(name)
+    local world = liveWorld()
+    local folder = world and world:FindFirstChild("Interactable")
+    return folder and folder:FindFirstChild(name)
+end
+
+local function characterParts()
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if root and humanoid and humanoid.Health > 0 then
+        return root, humanoid
+    end
+    return nil
+end
+
+local function positionOf(instance)
+    if instance:IsA("BasePart") then
+        return instance.Position
+    end
+    local ok, pivot = pcall(function()
+        return instance:GetPivot()
+    end)
+    if ok and pivot then
+        return pivot.Position
+    end
+    return nil
+end
+
+-- Distance along the ground: NPC pivots and zone centres sit at other heights than your feet.
+local function flatDistance(a, b)
+    return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+-- Standing in a zone part (the shop zones open their shop screen when you walk in).
+local function insidePart(part, point)
+    local offset = part.CFrame:PointToObjectSpace(point)
+    local half = part.Size / 2
+    return math.abs(offset.X) <= half.X and math.abs(offset.Z) <= half.Z and math.abs(offset.Y) <= half.Y + 5
+end
+
+local function stopWalking()
+    local root, humanoid = characterParts()
+    if root then
+        pcall(function()
+            humanoid:MoveTo(root.Position)
+        end)
+    end
+end
+
+-- One straight stretch with Humanoid:MoveTo. MoveTo gives up by itself after 8 s,
+-- so it is renewed until the point is reached; a jump when bumping into something.
+local function walkStraight(root, humanoid, point, deadline, arrived)
+    local lastPosition, lastMoved = root.Position, os.clock()
+    humanoid:MoveTo(point)
+    while alive and not walkCancelled and os.clock() < deadline do
+        task.wait(0.1)
+        if walkCancelled or not alive or not root.Parent or humanoid.Health <= 0 then
+            return false
+        end
+        if flatDistance(root.Position, point) <= 2.5 or arrived(root.Position) then
+            return true
+        end
+        if (root.Position - lastPosition).Magnitude > 0.4 then
+            lastPosition, lastMoved = root.Position, os.clock()
+        elseif os.clock() - lastMoved > 1 then
+            humanoid.Jump = true
+        end
+        if os.clock() - lastMoved > 4 then
+            return false -- stuck
+        end
+        humanoid:MoveTo(point)
+    end
+    return false
+end
+
+-- Walks until arrived(position) is true, around obstacles with PathfindingService,
+-- straight at the target when no path is found. Gives up after WALK_TIMEOUT.
+local function walkTo(target, arrived)
+    local deadline = os.clock() + WALK_TIMEOUT
+    for _ = 1, 3 do
+        local root, humanoid = characterParts()
+        if not root or walkCancelled or not alive then
+            return false
+        end
+        if arrived(root.Position) then
+            return true
+        end
+        local waypoints = {{Position = target}}
+        local path = PathfindingService:CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true})
+        local computed = pcall(function()
+            path:ComputeAsync(root.Position, target)
+        end)
+        if computed and path.Status == Enum.PathStatus.Success then
+            waypoints = path:GetWaypoints()
+        end
+        for _, waypoint in ipairs(waypoints) do
+            if waypoint.Action == Enum.PathWaypointAction.Jump then
+                humanoid.Jump = true
+            end
+            local reached = walkStraight(root, humanoid, waypoint.Position, deadline, arrived)
+            if arrived(root.Position) then
+                stopWalking()
+                return true
+            end
+            if not reached then
+                break
+            end
+        end
+        if os.clock() >= deadline then
+            break
+        end
+    end
+    stopWalking()
+    local root = characterParts()
+    return root ~= nil and arrived(root.Position)
+end
+
+local function within(target, radius)
+    return function(position)
+        return flatDistance(position, target) <= radius
+    end
+end
+
+-- ------------------------------------------
+-- Auto Upgrade / Auto Bait: spend cash at the shops like their buttons do
+-- ------------------------------------------
+-- Cash only: the Robux buttons next to them are never touched. Shop purchases are
+-- made only while you stand in that shop, through the same events as its buttons,
+-- and checked against your data afterwards. The Sell Trip walks you there after
+-- selling; walking in yourself works too.
+local SHOP_ORDER = {"Rods", "Upgrades", "Baits"} -- names of the shop zones (and of the screens they open)
+local SHOP_LABEL = {Rods = "rod shop", Upgrades = "upgrade shop", Baits = "bait shop"}
+
+local shopActivity -- what is being bought right now, for the status line
+local pendingEquip -- a rod this script just bought, to equip between casts
+local retryAt, retryDelay = {}, {}
+local shopWarned = {}
+local castValue = {throwId = nil, value = 0, average = nil, samples = 0}
+
+local function playerData()
+    local ok, data = pcall(function()
+        return AutoFishing.PlayerData:Get()
+    end)
+    if ok and type(data) == "table" then
+        return data
+    end
+    return nil
+end
+
+-- name -> info ({Price, Luck, ...}) for "Rod" or "Bait", as the game's shops list them.
+local function itemCollection(category)
+    local ok, items = pcall(function()
+        local list = Throw.Content.Item[category]
+        if type(list.GetCollection) == "function" then
+            return list:GetCollection()
+        end
+        return list.Items
+    end)
+    if ok and type(items) == "table" then
+        return items
+    end
+    return {}
+end
+
+local function canTry(key)
+    return os.clock() >= (retryAt[key] or 0)
+end
+
+local function markDone(key)
+    retryAt[key], retryDelay[key] = nil, nil
+end
+
+-- Waits 30 s after the first refusal, doubling up to 5 minutes, and says why once per kind.
+local function markRefused(kind, key, text)
+    local delay = math.min((retryDelay[key] or 15) * 2, 300)
+    retryDelay[key] = delay
+    retryAt[key] = os.clock() + delay
+    if not shopWarned[kind] then
+        shopWarned[kind] = true
+        warn("[SmartAutoFish] " .. text)
+    end
+end
+
+local function waitUntil(check, timeout)
+    local deadline = os.clock() + timeout
+    while alive do
+        local ok, done = pcall(check)
+        if ok and done then
+            return true
+        end
+        if os.clock() >= deadline then
+            return false
+        end
+        task.wait(0.2)
+    end
+    return false
+end
+
+-- Fires one purchase-like event and waits for the game to confirm it in your data.
+-- action: {doing, done, key, kind, failText, check, event, args}
+local function shopAction(action)
+    if not canTry(action.key) then
+        return false
+    end
+    shopActivity = action.doing
+    local ok, err = pcall(fireGame, action.event, table.unpack(action.args))
+    local confirmed = ok and waitUntil(action.check, CONFIRM_TIMEOUT)
+    shopActivity = nil
+    if confirmed then
+        markDone(action.key)
+        say(action.done)
+    else
+        markRefused(action.kind, action.key, action.failText .. (ok and "" or (" (" .. tostring(err) .. ")")))
+    end
+    return true
+end
+
+-- Upgrades: the cheapest next level of Capacity / Strength / Weight / Bounce you can
+-- pay for, priced with the same UpgradesConfig calls as the game's upgrade screen.
+local function upgradePick(data, cash)
+    local config = Throw.Config.UpgradesConfig
+    local world = config.KeyForData(data)
+    local pick
+    for _, name in ipairs(config.Order or {"Capacity", "Strength", "Weight", "Bounce"}) do
+        local level = config.LevelOf(data, name, world)
+        if level < config.MaxLevelFor(name, world) then
+            local price = config.GetPrice(name, level, world)
+            if type(price) == "number" and price <= cash and canTry("upgrade:" .. name)
+                and (pick == nil or price < pick.price) then
+                pick = {name = name, level = level, price = price, world = world}
+            end
+        end
+    end
+    return pick
+end
+
+local function buyUpgrade(data, cash)
+    local pick = upgradePick(data, cash)
+    if not pick then
+        return false
+    end
+    local config = Throw.Config.UpgradesConfig
+    return shopAction({
+        doing = string.format("buying %s (%s)", pick.name, shortMoney(pick.price)),
+        done = string.format("Auto Upgrade: bought %s for %s", pick.name, shortMoney(pick.price)),
+        key = "upgrade:" .. pick.name,
+        kind = "upgrade",
+        failText = string.format("Auto Upgrade: the upgrade shop did not sell %s (%s); it tries again later.", pick.name, shortMoney(pick.price)),
+        check = function()
+            return config.LevelOf(playerData(), pick.name, pick.world) > pick.level
+        end,
+        event = "Upgrades",
+        args = {"Buy", pick.name},
+    })
+end
+
+-- Rods for one place only (the maze / cave rods) are never bought.
+local function usableRod(info)
+    return type(info) == "table" and not info.MazeOnly and not info.CaveOnly
+end
+
+-- Rods: the luckiest rod you can pay for that beats every rod you own and is not
+-- locked behind a world (the game's own Rod:LockedBehind check).
+local function rodPick(data, cash)
+    local rods = itemCollection("Rod")
+    local owned = data.Rods or {}
+    local ownedLuck = -1
+    for name in pairs(owned) do
+        if usableRod(rods[name]) then
+            ownedLuck = math.max(ownedLuck, tonumber(rods[name].Luck) or 0)
+        end
+    end
+    local pick
+    for name, info in pairs(rods) do
+        local price, luck = tonumber(info.Price) or 0, tonumber(info.Luck) or 0
+        if usableRod(info) and not owned[name] and price > 0 and price <= cash and luck > ownedLuck
+            and canTry("rod:" .. name) and (pick == nil or luck > pick.luck) then
+            local ok, lockedBehind = pcall(function()
+                return Throw.Content.Item.Rod:LockedBehind(info, data)
+            end)
+            if ok and lockedBehind == nil then
+                pick = {name = name, price = price, luck = luck}
+            end
+        end
+    end
+    return pick
+end
+
+-- Puts a rod this script bought in your hand: the inventory's Equip call.
+local function equipBoughtRod(data)
+    local name = pendingEquip
+    if not name then
+        return false
+    end
+    if data.RodEquipped == name or not (data.Rods or {})[name] then
+        pendingEquip = nil
+        return false
+    end
+    return shopAction({
+        doing = "equipping the " .. name,
+        done = "Auto Upgrade: equipped the " .. name,
+        key = "equip",
+        kind = "equip",
+        failText = "Auto Upgrade: the game did not equip the " .. name .. " - equip it from your inventory.",
+        check = function()
+            return playerData().RodEquipped == name
+        end,
+        event = "RodShop",
+        args = {"Equip", name},
+    })
+end
+
+local function buyRod(data, cash)
+    local pick = rodPick(data, cash)
+    if not pick then
+        return false
+    end
+    local bought = false
+    shopAction({
+        doing = string.format("buying the %s (%s)", pick.name, shortMoney(pick.price)),
+        done = string.format("Auto Upgrade: bought the %s for %s", pick.name, shortMoney(pick.price)),
+        key = "rod:" .. pick.name,
+        kind = "rod",
+        failText = string.format("Auto Upgrade: the rod shop did not sell the %s (%s). Buy any rod there by hand once and send the console line that starts with \"rod shop sent:\".", pick.name, shortMoney(pick.price)),
+        check = function()
+            bought = (playerData().Rods or {})[pick.name] ~= nil
+            return bought
+        end,
+        event = "RodShop",
+        args = {"Buy", pick.name},
+    })
+    if bought then
+        pendingEquip = pick.name
+        equipBoughtRod(playerData() or data)
+    end
+    return true
+end
+
+local function activeBaitCharges(data)
+    local total = 0
+    for _, charges in pairs(data.ActiveBaits or {}) do
+        if type(charges) == "number" and charges > 0 then
+            total = total + charges
+        end
+    end
+    return total
+end
+
+local function baitAmount(item)
+    return (type(item.Data) == "table" and tonumber(item.Data.Amount)) or 1
+end
+
+-- Baits in your bag, all kinds (name = nil) or one kind.
+local function ownedBaits(data, name)
+    local total = 0
+    for _, item in pairs(data.Inventory or {}) do
+        if type(item) == "table" and item.Type == "Bait" and (name == nil or item.Name == name) then
+            total = total + baitAmount(item)
+        end
+    end
+    return total
+end
+
+-- Baits: when none is active, use the luckiest one you own (the inventory's Use button).
+local function useBait(data, baits)
+    local pick
+    for guid, item in pairs(data.Inventory or {}) do
+        if type(item) == "table" and item.Type == "Bait" and baitAmount(item) > 0 then
+            local luck = tonumber((baits[item.Name] or {}).Luck) or 0
+            if pick == nil or luck > pick.luck then
+                pick = {guid = guid, name = item.Name, luck = luck}
+            end
+        end
+    end
+    if not pick then
+        return false
+    end
+    return shopAction({
+        doing = "using a " .. pick.name,
+        done = "Auto Bait: using a " .. pick.name,
+        key = "use bait",
+        kind = "use bait",
+        failText = "Auto Bait: the game did not use the " .. pick.name .. ".",
+        check = function()
+            return activeBaitCharges(playerData()) > 0
+        end,
+        event = "ConsumeBait",
+        args = {pick.guid, 1},
+    })
+end
+
+-- On a Sell Trip, bait gets at most BAIT_SHARE of what the trip just sold, so the
+-- rest can pile up across trips for the next rod or upgrade.
+local baitAllowance
+
+-- What one bait may cost: BAIT_SHARE of what its BAIT_CHARGES casts are expected to
+-- catch, from the fish values of your recent casts. Unknown before 3 casts: no buying.
+local function baitPick(cash)
+    if castValue.samples < 3 or not castValue.average then
+        return nil
+    end
+    local budget = math.min(cash, castValue.average * BAIT_CHARGES * BAIT_SHARE, baitAllowance or math.huge)
+    local pick
+    for name, info in pairs(itemCollection("Bait")) do
+        local price, luck = tonumber(info.Price) or 0, tonumber(info.Luck) or 0
+        if price > 0 and price <= budget and canTry("bait:" .. name) and (pick == nil or luck > pick.luck) then
+            pick = {name = name, price = price, luck = luck}
+        end
+    end
+    return pick
+end
+
+local function buyBait(data, cash)
+    local pick = baitPick(cash)
+    if not pick then
+        return false
+    end
+    local before = ownedBaits(data, pick.name)
+    local bought = false
+    shopAction({
+        doing = string.format("buying a %s (%s)", pick.name, shortMoney(pick.price)),
+        done = string.format("Auto Bait: bought a %s for %s", pick.name, shortMoney(pick.price)),
+        key = "bait:" .. pick.name,
+        kind = "bait",
+        failText = string.format("Auto Bait: the bait shop did not sell the %s (%s). Buy any bait there by hand once and send the console line that starts with \"bait shop sent:\".", pick.name, shortMoney(pick.price)),
+        check = function()
+            bought = ownedBaits(playerData(), pick.name) > before
+            return bought
+        end,
+        event = "BaitShop",
+        args = {"Buy", pick.name, 1},
+    })
+    if bought and baitAllowance then
+        baitAllowance = baitAllowance - pick.price
+    end
+    return true
+end
+
+-- Is there something to buy in this shop right now?
+local function shopWanted(shop, data)
+    local cash = tonumber(data.Cash) or 0
+    if shop == "Rods" then
+        return autoUpgrade and rodPick(data, cash) ~= nil
+    elseif shop == "Upgrades" then
+        return autoUpgrade and upgradePick(data, cash) ~= nil
+    elseif shop == "Baits" then
+        return autoBait and ownedBaits(data) < BAITS_PER_TRIP and baitPick(cash) ~= nil
+    end
+    return false
+end
+
+-- Buys up to `limit` things in the shop you stand in, best first, until nothing fits.
+local function shopHere(shop, limit)
+    for _ = 1, limit do
+        local data = playerData()
+        if not data or not alive or not shopWanted(shop, data) then
+            return
+        end
+        local cash = tonumber(data.Cash) or 0
+        if shop == "Rods" then
+            buyRod(data, cash)
+        elseif shop == "Upgrades" then
+            buyUpgrade(data, cash)
+        else
+            buyBait(data, cash)
+        end
+    end
+end
+
+-- The shop zone you are standing in, if any.
+local function currentShop()
+    local root = characterParts()
+    if not root then
+        return nil
+    end
+    for _, shop in ipairs(SHOP_ORDER) do
+        local zone = interactable(shop)
+        if zone and zone:IsA("BasePart") and insidePart(zone, root.Position) then
+            return shop
+        end
+    end
+    return nil
+end
+
+-- Value of the fish on the hook, kept per cast so Auto Bait knows what a cast is worth.
+local function hookedTotal(fishList)
+    local total = 0
+    for _, fish in ipairs(fishList) do
+        if fish.caught and not fish.special then
+            total = total + (fishValue(fish) or 0)
+        end
+    end
+    return total
+end
+
+local function commitCastValue()
+    if castValue.throwId == nil then
+        return
+    end
+    castValue.samples = castValue.samples + 1
+    castValue.average = castValue.average and (castValue.average * 0.8 + castValue.value * 0.2) or castValue.value
+    castValue.throwId = nil
+end
+
+local function trackCastValue()
+    if Throw.Active and Throw.ThrowId ~= nil then
+        if castValue.throwId ~= Throw.ThrowId then
+            commitCastValue()
+            castValue.throwId, castValue.value = Throw.ThrowId, 0
+        end
+        local school = Throw.Sub and Throw.Sub.FishSchool
+        if school and school.Fish then
+            castValue.value = math.max(castValue.value, hookedTotal(school.Fish))
+        end
+    elseif castValue.throwId ~= nil then
+        commitCastValue()
+    end
+end
+
+-- Prints what the game's own rod / bait shop buttons send, so a shop that wants a
+-- different call than the one above can be fixed from one console line.
+local shopWatches = {}
+
+local function describeArgs(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+        local value = select(i, ...)
+        parts[i] = type(value) == "string" and string.format("%q", value) or tostring(value)
+    end
+    return table.concat(parts, ", ")
+end
+
+local function watchShopEvent(name, label)
+    local ok, event = pcall(gameEvent, name)
+    if not ok or type(event) ~= "table" or type(event.Fire) ~= "function" then
+        return
+    end
+    local fire, own = event.Fire, rawget(event, "Fire")
+    local watched = pcall(rawset, event, "Fire", function(self, reliable, ...)
+        if not scriptFiring and (...) ~= "Equip" then
+            pcall(say, label .. " sent: " .. describeArgs(...))
+        end
+        return fire(self, reliable, ...)
+    end)
+    if watched then
+        shopWatches[#shopWatches + 1] = {event = event, own = own}
+    end
+end
+
+local function unwatchShopEvents()
+    for _, watch in ipairs(shopWatches) do
+        pcall(rawset, watch.event, "Fire", watch.own)
+    end
+    shopWatches = {}
+end
+
+-- ------------------------------------------
+-- Sell Trip: sell at the NPC, shop, walk back, fish on
+-- ------------------------------------------
+-- The game sells automatic selling as its "Auto Sell" gamepass; this does what you
+-- would do by hand instead: walk to the sell NPC and use its "Sell All Fish" (the
+-- same SellAll call its dialog makes, from where its Talk prompt reaches). Fishing
+-- stops for the walk, which is what the gamepass saves you.
+local trip = {active = false, status = nil, retryAt = 0}
+
+-- Fish the NPC's "Sell All Fish" counts: unlocked fish that have a sell price.
+-- nil when the game's Lock / Fish lookups are not available.
+local function sellableFish(data)
+    local ok, count = pcall(function()
+        local lock, fishInfo = Throw.Modules.Lock, Throw.Content.Item.Fish
+        local total = 0
+        for _, item in pairs(data.Inventory or {}) do
+            if type(item) == "table" and item.Type == "Fish" and not lock.IsLocked(item) then
+                local info = fishInfo:Get(item.Name, true)
+                if info and info.SellPrice then
+                    total = total + 1
+                end
+            end
+        end
+        return total
+    end)
+    return ok and count or nil
+end
+
+local function inThrowArea()
+    local ok, inside = pcall(function()
+        return Fishing:InArea()
+    end)
+    return ok and inside == true
+end
+
+-- A spot in the current world's Throw area: the saved one if it is in it, else the nearest part.
+local function throwSpot(saved)
+    local area = interactable("Throw")
+    if not area then
+        return nil
+    end
+    local parts = area:IsA("BasePart") and {area} or area:GetChildren()
+    if saved then
+        for _, part in ipairs(parts) do
+            if part:IsA("BasePart") and insidePart(part, saved) then
+                return saved
+            end
+        end
+    end
+    local root = characterParts()
+    local best, bestDistance
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") then
+            local distance = root and flatDistance(root.Position, part.Position) or 0
+            if best == nil or distance < bestDistance then
+                best, bestDistance = part.Position, distance
+            end
+        end
+    end
+    return best
+end
+
+-- Screens the walk may have opened (shop zones, the Teleport zone). An open screen
+-- keeps the game's auto fishing from casting (Fishing:UIOwnsScreen).
+local function closeShopScreens()
+    for _, name in ipairs({"Rods", "Upgrades", "Baits", "Teleport"}) do
+        pcall(function()
+            local screen = Throw.UI:Get(name)
+            if screen and screen:IsOpened() then
+                screen:Close()
+            end
+        end)
+    end
+end
+
+local function setAutoFishing(on)
+    if isAutoOn() ~= on then
+        pcall(function()
+            AutoFishing:Toggle()
+        end)
+    end
+end
+
+-- Walks back into the Throw area and turns the game's auto fishing on again.
+local function backToWater(spot)
+    trip.status = "walking back to the water"
+    local target = throwSpot(spot)
+    if not target then
+        warn("[SmartAutoFish] Sell Trip: no fishing spot found in this world - auto fishing stays off")
+        return false
+    end
+    walkTo(target, within(target, 3))
+    if not inThrowArea() then
+        warn("[SmartAutoFish] Sell Trip: could not walk back to the water - auto fishing stays off")
+        return false
+    end
+    setAutoFishing(true)
+    say("Sell Trip: back at the water, auto fishing on")
+    return true
+end
+
+local function tripDue(data)
+    if not sellTrip or trip.active or os.clock() < trip.retryAt or not isAutoOn() then
+        return nil
+    end
+    if Throw.Active or Fishing.Charging or not inThrowArea() then
+        return nil
+    end
+    local sellable = sellableFish(data)
+    if sellable and sellable > 0 and (sellable >= SELL_AT or AutoFishing.FullWarned) then
+        return sellable
+    end
+    return nil
+end
+
+local function runTrip(sellable)
+    trip.active = true
+    walkCancelled = false
+    local root = characterParts()
+    local spot = root and root.Position
+    say(string.format("Sell Trip: %d fish to sell - walking to the sell NPC", sellable))
+    setAutoFishing(false) -- the game would turn it off anyway once you leave the water
+    trip.status = "finishing the cast"
+    waitUntil(function()
+        return not Fishing.Charging and not Throw.Active
+    end, 40)
+
+    local ok, err = pcall(function()
+        local npc = interactable("NPC_Sell")
+        local npcPosition = npc and positionOf(npc)
+        if not npcPosition then
+            error("no sell NPC in this world", 0)
+        end
+        trip.status = "walking to the sell NPC"
+        if not walkTo(npcPosition, within(npcPosition, SELL_RANGE)) then
+            error("could not walk to the sell NPC", 0)
+        end
+        trip.status = "selling"
+        local result = invokeGame("SellAll", "Fish", nil)
+        local amount = type(result) == "table" and tonumber(result.Amount) or 0
+        if amount <= 0 then
+            error("the sell NPC sold nothing", 0)
+        end
+        local value = tonumber(result.Value) or 0
+        say(string.format("Sell Trip: sold %d fish for %s", amount, shortMoney(value)))
+        baitAllowance = value * BAIT_SHARE
+
+        for _, shop in ipairs(SHOP_ORDER) do
+            local data = playerData()
+            if walkCancelled or not alive or not data then
+                break
+            end
+            local zone = interactable(shop)
+            if zone and zone:IsA("BasePart") and shopWanted(shop, data) then
+                trip.status = "walking to the " .. SHOP_LABEL[shop]
+                if walkTo(zone.Position, function(position)
+                    return insidePart(zone, position)
+                end) then
+                    shopHere(shop, 30)
+                else
+                    warn("[SmartAutoFish] Sell Trip: could not walk into the " .. SHOP_LABEL[shop])
+                end
+            end
+        end
+        closeShopScreens()
+    end)
+    baitAllowance = nil
+    if walkCancelled then
+        say("Sell Trip: stopped where you are - auto fishing stays off, you have control")
+    elseif not ok then
+        warn("[SmartAutoFish] Sell Trip: " .. tostring(err) .. " - trying again in 10 minutes")
+        trip.retryAt = os.clock() + 600
+    end
+
+    if alive and not walkCancelled then
+        closeShopScreens()
+        backToWater(spot)
+    end
+    trip.active, trip.status = false, nil
+end
+
+-- The game moves you to a server after 15 minutes without input and passes where you
+-- were (IdleRejoin). With this script in Volt's autoexec it runs again there: walk
+-- back to the water and fish on.
+local function resumeAfterRejoin()
+    local ok, teleportData = pcall(function()
+        return TeleportService:GetLocalPlayerTeleportData()
+    end)
+    if not ok or type(teleportData) ~= "table" or not teleportData.IdleRejoin or not sellTrip then
+        return
+    end
+    say("back after the game's idle reconnect - returning to the water")
+    waitUntil(function()
+        return characterParts() ~= nil
+    end, 30)
+    task.wait(6) -- the game turns auto fishing back on 5 s after joining
+    if inThrowArea() then
+        setAutoFishing(true)
+        return
+    end
+    local resume = type(teleportData.Resume) == "table" and teleportData.Resume or {}
+    local saved = type(resume.Position) == "table" and #resume.Position == 3
+        and Vector3.new(resume.Position[1], resume.Position[2], resume.Position[3]) or nil
+    trip.active = true
+    walkCancelled = false
+    backToWater(saved)
+    trip.active, trip.status = false, nil
+end
+
+-- Between casts: equip a rod just bought, keep a bait active, and buy in a shop you walked into.
+local function shopTick()
+    if trip.active or Throw.Active or Fishing.Charging then
+        return
+    end
+    local data = playerData()
+    if not data then
+        return
+    end
+    if autoUpgrade and equipBoughtRod(data) then
+        return
+    end
+    if autoBait and activeBaitCharges(data) <= 0 and useBait(data, itemCollection("Bait")) then
+        return
+    end
+    local shop = currentShop()
+    if shop then
+        shopHere(shop, 1)
+    end
+end
+
+-- ------------------------------------------
+-- Auto Fight + rod
+-- ------------------------------------------
+
+-- One "click" of the catch fight: the same callback the on-screen Click button
+-- runs, with a real mouse click on that button as the fallback.
+local function clickFight()
+    local hud = fishingHUD()
+    local fight = hud and hud.Sub and hud.Sub.CatchMinigame
+    if not fight then
+        return
+    end
+
+    local callback = fight.ClickCallback
+    if callback and pcall(callback) then
+        return
+    end
+
+    local button = fight.Button
+    if VirtualInputManager and button and button.Visible then
+        local position, size = button.AbsolutePosition, button.AbsoluteSize
+        local gui = button:FindFirstAncestorOfClass("ScreenGui")
+        local inset = (gui and gui.IgnoreGuiInset) and Vector2.new(0, 0) or GuiService:GetGuiInset()
+        local x = position.X + size.X / 2 + inset.X
+        local y = position.Y + size.Y / 2 + inset.Y
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end)
+    end
+end
+
+-- Built-in auto fishing only starts casting with a rod in hand.
+local lastEquipTry = -math.huge
+local function ensureRod()
+    if os.clock() - lastEquipTry < 2 then
+        return
+    end
+    local character = LocalPlayer.Character
+    if not character or character:FindFirstChildOfClass("Tool") then
+        return
+    end
+    lastEquipTry = os.clock()
+    pcall(function()
+        AutoFishing:EquipRod()
+    end)
+end
+
+local function statusText()
+    if not AutoFishing then
+        return "loading..."
+    end
+    if shopActivity then
+        return shopActivity -- purchases only happen between casts
+    end
+    if trip.status then
+        return "trip: " .. trip.status
+    end
+    if not isAutoOn() then
+        local level = playerLevel()
+        if level and level < AUTO_UNLOCK_LEVEL then
+            return string.format("need Lv%d (you Lv%d)", AUTO_UNLOCK_LEVEL, level)
+        end
+        return "idle"
+    end
+    if AutoFishing.FullWarned then
+        return "backpack full!"
+    end
+    if Fishing.Charging then
+        return perfectCast and "waiting for green" or "charging cast"
+    end
+    if Throw.Active then
+        if isFightActive() then
+            return "catch fight"
+        end
+        if Throw.ReelRequested then
+            local school = Throw.Sub and Throw.Sub.FishSchool
+            local hooked = school and school.Fish and bestHookedValue(school.Fish)
+            if hooked then
+                return string.format("reeling in (%s)", shortMoney(hooked))
+            end
+            return "reeling in"
+        end
+        if Throw.Catchable then
+            local target = bestFirst and AutoFishing.Target
+            local value = target and fishValue(target)
+            if value then
+                return string.format("catching fish (%s)", shortMoney(value))
+            end
+            return "catching fish"
+        end
+        return "casting"
+    end
+    return "waiting next cast"
+end
+
+-- ------------------------------------------
+-- Panel (the KILLSTAM hub's look) + wiring
+-- ------------------------------------------
+local function main()
+    say(string.format("executor: %s | gethui=%s | getgenv=%s | VirtualInputManager=%s",
+        executorName(), tostring(gethui ~= nil), tostring(getgenv ~= nil), tostring(VirtualInputManager ~= nil)))
+
+    -- Places a ScreenGui can live, in the order we try them. CoreGui first: it is
+    -- what the original script used.
+    local function candidateHolders()
+        local list = {{"CoreGui", CoreGui}}
+        if gethui then
+            local ok, holder = pcall(gethui)
+            if ok and typeof(holder) == "Instance" then
+                list[#list + 1] = {"gethui()", holder}
+            end
+        end
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            list[#list + 1] = {"PlayerGui", playerGui}
+        end
+        return list
+    end
+
+    for _, entry in ipairs(candidateHolders()) do
+        pcall(function()
+            local old = entry[2]:FindFirstChild(GUI_NAME)
+            if old then
+                old:Destroy()
+            end
+        end)
+    end
+
+    -- ---------- colours (the KILLSTAM hub's palette) ----------
+    local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+    local Theme = {
+        Bg = Color3.fromRGB(11, 9, 18),
+        Panel = Color3.fromRGB(17, 14, 28),
+        Card = Color3.fromRGB(24, 20, 39),
+        CardHover = Color3.fromRGB(33, 27, 53),
+        Stroke = Color3.fromRGB(62, 50, 98),
+        Off = Color3.fromRGB(44, 38, 66),
+        KnobOff = Color3.fromRGB(165, 158, 195),
+        Text = Color3.fromRGB(246, 244, 255),
+        SubText = Color3.fromRGB(150, 142, 184),
+        Muted = Color3.fromRGB(96, 89, 128),
+        Crimson = Color3.fromRGB(255, 46, 99),
+        Ember = Color3.fromRGB(255, 128, 64),
+        Gold = Color3.fromRGB(255, 196, 77),
+        Violet = Color3.fromRGB(160, 92, 255),
+        Pink = Color3.fromRGB(255, 75, 220),
+        Cyan = Color3.fromRGB(0, 214, 255),
+        Mint = Color3.fromRGB(64, 230, 160),
+    }
+    local TITLE_COLORS = {Theme.Crimson, Theme.Ember, Theme.Gold, WHITE, Theme.Violet, Theme.Crimson}
+
+    -- ---------- building blocks ----------
+    local function create(className, props)
+        local instance = Instance.new(className)
+        local parent
+        for key, value in pairs(props or {}) do
+            if key == "Parent" then
+                parent = value
+            else
+                instance[key] = value
+            end
+        end
+        if parent then
+            instance.Parent = parent
+        end
+        return instance
+    end
+
+    local function corner(parent, radius)
+        return create("UICorner", {CornerRadius = UDim.new(0, radius or 10), Parent = parent})
+    end
+
+    local function round(parent)
+        return create("UICorner", {CornerRadius = UDim.new(1, 0), Parent = parent})
+    end
+
+    local function stroke(parent, color, thickness, transparency)
+        return create("UIStroke", {
+            Color = color,
+            Thickness = thickness or 1,
+            Transparency = transparency or 0,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Parent = parent,
+        })
+    end
+
+    local function colorSeq(colors)
+        local keys = {}
+        for i, color in ipairs(colors) do
+            keys[i] = ColorSequenceKeypoint.new((i - 1) / (#colors - 1), color)
+        end
+        return ColorSequence.new(keys)
+    end
+
+    local function fadeSeq(points)
+        local keys = {}
+        for i, point in ipairs(points) do
+            keys[i] = NumberSequenceKeypoint.new(point[1], point[2])
+        end
+        return NumberSequence.new(keys)
+    end
+
+    local function gradient(parent, colors, rotation, transparency)
+        return create("UIGradient", {
+            Color = colorSeq(colors),
+            Rotation = rotation or 0,
+            Transparency = transparency,
+            Parent = parent,
+        })
+    end
+
+    local function tween(object, duration, props, style, direction)
+        local t = TweenService:Create(object,
+            TweenInfo.new(duration, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out), props)
+        t:Play()
+        return t
+    end
+
+    local function text(parent, props)
+        local merged = {
+            BackgroundTransparency = 1,
+            Font = Enum.Font.GothamBold,
+            TextColor3 = Theme.Text,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = parent,
+        }
+        for key, value in pairs(props) do
+            merged[key] = value
+        end
+        return create("TextLabel", merged)
+    end
+
+    -- Gradients that turn / sweep every frame (moved by the RenderStepped loop at the end).
+    local spinners, shimmers = {}, {}
+    local function spin(grad, speed)
+        spinners[#spinners + 1] = {grad, speed}
+        return grad
+    end
+    local function shimmer(grad, speed)
+        shimmers[#shimmers + 1] = {grad, speed}
+        return grad
+    end
+
+    local function isPress(input)
+        return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+    end
+
+    local function chipSequence(accent)
+        return colorSeq({accent:Lerp(WHITE, 0.3), accent, accent:Lerp(BLACK, 0.45)})
+    end
+
+    -- A small rounded tile with a gradient and a glyph, used as an icon.
+    local function iconChip(parent, glyph, accent, size)
+        local chip = create("Frame", {
+            Name = "Icon",
+            Size = UDim2.fromOffset(size, size),
+            BackgroundColor3 = WHITE,
+            Parent = parent,
+        })
+        corner(chip, math.floor(size * 0.3))
+        local grad = create("UIGradient", {Color = chipSequence(accent), Rotation = 135, Parent = chip})
+        local chipStroke = stroke(chip, accent:Lerp(WHITE, 0.35), 1, 0.5)
+        local length = utf8.len(glyph) or #glyph
+        local textScale = length <= 1 and 0.5 or (length == 2 and 0.36 or 0.28)
+        text(chip, {
+            Size = UDim2.fromScale(1, 1),
+            Font = Enum.Font.GothamBlack,
+            Text = glyph,
+            TextColor3 = WHITE,
+            TextSize = math.floor(size * textScale),
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextStrokeTransparency = 0.65,
+        })
+        return chip, grad, chipStroke
+    end
+
+    -- A ripple that spreads from where a button was pressed.
+    local function attachRipple(button, color)
+        button.ClipsDescendants = true
+        button.InputBegan:Connect(function(input)
+            if not isPress(input) then
+                return
+            end
+            local absPos, absSize = button.AbsolutePosition, button.AbsoluteSize
+            if not absPos or not absSize or absSize.X <= 0 or absSize.Y <= 0 then
+                return
+            end
+            local circle = create("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromScale((input.Position.X - absPos.X) / absSize.X, (input.Position.Y - absPos.Y) / absSize.Y),
+                Size = UDim2.fromScale(0, 0),
+                SizeConstraint = Enum.SizeConstraint.RelativeXX,
+                BackgroundColor3 = color,
+                BackgroundTransparency = 0.7,
+                ZIndex = 0,
+                Parent = button,
+            })
+            round(circle)
+            tween(circle, 0.6, {Size = UDim2.fromScale(2.4, 2.4), BackgroundTransparency = 1}, Enum.EasingStyle.Quad)
+            task.delay(0.65, function()
+                circle:Destroy()
+            end)
+        end)
+    end
+
+    -- Drag `target` by `handle` with a mouse or a finger. Returns "was that a drag?"
+    -- so a button that is also a drag handle can ignore the click that ends a drag.
+    local function makeDraggable(handle, target)
+        local dragging, moved, dragStart, startPos = false, false, nil, nil
+        handle.InputBegan:Connect(function(input)
+            if isPress(input) then
+                dragging, moved = true, false
+                dragStart, startPos = input.Position, target.Position
+            end
+        end)
+        track(UserInputService.InputChanged:Connect(function(input)
+            if not dragging then
+                return
+            end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+                return
+            end
+            local delta = input.Position - dragStart
+            if delta.Magnitude > 4 then
+                moved = true
+            end
+            if moved then
+                target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            end
+        end))
+        track(UserInputService.InputEnded:Connect(function(input)
+            if isPress(input) then
+                dragging = false
+            end
+        end))
+        return function()
+            return moved
+        end
+    end
+
+    local ScreenGui = create("ScreenGui", {
+        Name = GUI_NAME,
+        ResetOnSpawn = false,
+        DisplayOrder = 999,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    })
+
+    -- ---------- notices that slide in at the top ----------
+    local ToastHolder = create("Frame", {
+        Name = "Toasts",
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0, 12),
+        Size = UDim2.fromOffset(300, 280),
+        BackgroundTransparency = 1,
+        ZIndex = 20,
+        Parent = ScreenGui,
+    })
+    create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        Padding = UDim.new(0, 8),
+        Parent = ToastHolder,
+    })
+
+    local toastCount = 0
+    local function toast(title, message, accent, icon, duration)
+        accent = accent or Theme.Crimson
+        duration = duration or 2.4
+        toastCount = toastCount + 1
+
+        local slots = {}
+        for _, child in ipairs(ToastHolder:GetChildren()) do
+            if child:IsA("Frame") then
+                slots[#slots + 1] = child
+            end
+        end
+        table.sort(slots, function(a, b)
+            return a.LayoutOrder < b.LayoutOrder
+        end)
+        for i = 1, #slots - 3 do
+            slots[i]:Destroy()
+        end
+
+        local slot = create("Frame", {
+            Name = "Toast",
+            BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(300, 58),
+            LayoutOrder = toastCount,
+            Parent = ToastHolder,
+        })
+        local card = create("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = WHITE, Parent = slot})
+        corner(card, 12)
+        gradient(card, {accent:Lerp(Theme.Panel, 0.78), Theme.Panel}, 0)
+        stroke(card, accent, 1.2, 0.25)
+        local cardScale = create("UIScale", {Scale = 0.6, Parent = card})
+        local chip = iconChip(card, icon or "!", accent, 34)
+        chip.Position = UDim2.fromOffset(12, 12)
+        text(card, {
+            Position = UDim2.fromOffset(56, 10),
+            Size = UDim2.new(1, -66, 0, 18),
+            Text = title,
+            TextSize = 13,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        text(card, {
+            Position = UDim2.fromOffset(56, 29),
+            Size = UDim2.new(1, -66, 0, 16),
+            Font = Enum.Font.GothamMedium,
+            Text = message,
+            TextColor3 = Theme.SubText,
+            TextSize = 11,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local timer = create("Frame", {
+            Position = UDim2.new(0, 12, 1, -4),
+            Size = UDim2.new(1, -24, 0, 2),
+            BackgroundColor3 = accent,
+            BorderSizePixel = 0,
+            Parent = card,
+        })
+        round(timer)
+
+        tween(cardScale, 0.45, {Scale = 1}, Enum.EasingStyle.Back)
+        tween(timer, duration, {Size = UDim2.new(0, 0, 0, 2)}, Enum.EasingStyle.Linear)
+        task.delay(duration, function()
+            if not slot.Parent then
+                return
+            end
+            tween(cardScale, 0.25, {Scale = 0}, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+            task.wait(0.25)
+            slot:Destroy()
+        end)
+    end
+
+    local function featureToast(name, on, accent, icon, onText, offText)
+        toast(name, on and onText or offText, on and accent or Theme.Muted, icon)
+    end
+
+    -- ---------- main window ----------
+    local WINDOW_W, WINDOW_H, COLLAPSED_H = 560, 480, 78
+    local BODY_H = WINDOW_H - 120
+
+    local MainFrame = create("Frame", {
+        Name = "MainFrame",
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0.5, -WINDOW_H / 2),
+        Size = UDim2.fromOffset(WINDOW_W, WINDOW_H),
+        BackgroundColor3 = WHITE,
+        Active = true,
+        ClipsDescendants = true,
+        Visible = false,
+        Parent = ScreenGui,
+    })
+    corner(MainFrame, 16)
+    gradient(MainFrame, {Color3.fromRGB(26, 10, 26), Theme.Bg, Color3.fromRGB(10, 10, 28)}, 125)
+    spin(gradient(stroke(MainFrame, WHITE, 2, 0), {Theme.Gold, Theme.Crimson, Theme.Violet, Theme.Cyan, Theme.Gold}), 70)
+    local WindowScale = create("UIScale", {Parent = MainFrame})
+
+    -- Glowing orbs drifting behind everything.
+    for _, orb in ipairs({
+        {Theme.Crimson, 240, UDim2.fromScale(0.8, 0.32), UDim2.fromOffset(-24, 14)},
+        {Theme.Violet, 230, UDim2.fromScale(0.3, 0.72), UDim2.fromOffset(26, -16)},
+        {Theme.Cyan, 150, UDim2.fromScale(0.58, 0.82), UDim2.fromOffset(-14, -18)},
+    }) do
+        local color, diameter, position, drift = orb[1], orb[2], orb[3], orb[4]
+        local outer = create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = position,
+            Size = UDim2.fromOffset(diameter, diameter),
+            BackgroundColor3 = color,
+            BackgroundTransparency = 0.93,
+            ZIndex = 0,
+            Parent = MainFrame,
+        })
+        round(outer)
+        round(create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromScale(0.55, 0.55),
+            BackgroundColor3 = color,
+            BackgroundTransparency = 0.88,
+            ZIndex = 0,
+            Parent = outer,
+        }))
+        TweenService:Create(outer, TweenInfo.new(7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+            Position = position + drift,
+        }):Play()
+    end
+
+    -- ---------- banner ----------
+    local Banner = create("Frame", {
+        Name = "Banner",
+        Position = UDim2.fromOffset(8, 8),
+        Size = UDim2.new(1, -16, 0, 62),
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.05,
+        Active = true,
+        ClipsDescendants = true,
+        Parent = MainFrame,
+    })
+    corner(Banner, 12)
+    gradient(Banner, {Color3.fromRGB(80, 14, 44), Color3.fromRGB(40, 14, 64), Color3.fromRGB(14, 20, 52)}, 0)
+    spin(gradient(stroke(Banner, WHITE, 1, 0.5), {Theme.Crimson, Theme.Violet, Theme.Gold, Theme.Crimson}), 40)
+
+    local LogoRing = create("Frame", {
+        Position = UDim2.fromOffset(8, 7),
+        Size = UDim2.fromOffset(48, 48),
+        BackgroundTransparency = 1,
+        Parent = Banner,
+    })
+    corner(LogoRing, 14)
+    local LogoRingStroke = stroke(LogoRing, WHITE, 2, 0.2)
+    spin(gradient(LogoRingStroke, {Theme.Gold, Theme.Crimson, Theme.Violet, Theme.Gold}), 140)
+
+    local Logo = create("Frame", {
+        Position = UDim2.fromOffset(12, 11),
+        Size = UDim2.fromOffset(40, 40),
+        BackgroundColor3 = WHITE,
+        Parent = Banner,
+    })
+    corner(Logo, 11)
+    spin(gradient(Logo, {Theme.Crimson, Color3.fromRGB(110, 16, 60), Theme.Violet}), 50)
+    text(Logo, {
+        Size = UDim2.fromScale(1, 1),
+        Font = Enum.Font.GothamBlack,
+        Text = HUB_TITLE:sub(1, 1),
+        TextColor3 = WHITE,
+        TextSize = 24,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextStrokeTransparency = 0.5,
+    })
+
+    -- The title, with a red and a blue ghost behind it that jitter now and then.
+    local TITLE_POS = UDim2.fromOffset(66, 5)
+    local GHOST_A_POS = TITLE_POS + UDim2.fromOffset(-2, 0)
+    local GHOST_B_POS = TITLE_POS + UDim2.fromOffset(2, 1)
+    local function titleLayer(name, color, transparency, position)
+        return text(Banner, {
+            Name = name,
+            Position = position,
+            Size = UDim2.fromOffset(230, 32),
+            Font = Enum.Font.GothamBlack,
+            Text = HUB_TITLE,
+            TextColor3 = color,
+            TextTransparency = transparency,
+            TextSize = 28,
+        })
+    end
+    local TitleGhostA = titleLayer("TitleGhostA", Theme.Crimson, 0.35, GHOST_A_POS)
+    local TitleGhostB = titleLayer("TitleGhostB", Theme.Cyan, 0.5, GHOST_B_POS)
+    local TitleMain = titleLayer("Title", WHITE, 0, TITLE_POS)
+    shimmer(gradient(TitleMain, TITLE_COLORS), 0.35)
+    create("UIStroke", {
+        Color = Color3.fromRGB(120, 10, 40),
+        Thickness = 1.2,
+        Transparency = 0.2,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+        Parent = TitleMain,
+    })
+
+    local EditionPill = text(Banner, {
+        Position = UDim2.fromOffset(67, 39),
+        Size = UDim2.fromOffset(64, 16),
+        BackgroundTransparency = 0,
+        BackgroundColor3 = WHITE,
+        Font = Enum.Font.GothamBlack,
+        Text = "AUTO FISH",
+        TextColor3 = Color3.fromRGB(40, 20, 0),
+        TextSize = 9,
+        TextXAlignment = Enum.TextXAlignment.Center,
+    })
+    round(EditionPill)
+    shimmer(gradient(EditionPill, {Theme.Gold, Color3.fromRGB(255, 240, 190), Theme.Ember, Theme.Gold}), 0.5)
+    text(Banner, {
+        Position = UDim2.fromOffset(138, 38),
+        Size = UDim2.fromOffset(160, 18),
+        Text = "FISHING SUITE  •  v7",
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+    })
+
+    -- Your picture and name on the right of the banner.
+    local AvatarImage, AvatarInitial
+    do
+        local avatar = create("Frame", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -80, 0.5, 0),
+            Size = UDim2.fromOffset(38, 38),
+            BackgroundColor3 = Color3.fromRGB(38, 31, 67),
+            Parent = Banner,
+        })
+        round(avatar)
+        gradient(stroke(avatar, WHITE, 2, 0), {Color3.fromRGB(255, 243, 196), Theme.Gold, Color3.fromRGB(186, 117, 23)}, 45)
+        AvatarImage = create("ImageLabel", {
+            Name = "PlayerThumbnail",
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            ImageTransparency = 1,
+            ScaleType = Enum.ScaleType.Crop,
+            ZIndex = 2,
+            Parent = avatar,
+        })
+        round(AvatarImage)
+        AvatarInitial = text(avatar, {
+            Size = UDim2.fromScale(1, 1),
+            Font = Enum.Font.GothamBlack,
+            Text = string.sub(LocalPlayer.Name, 1, 1):upper(),
+            TextColor3 = Color3.fromRGB(255, 243, 196),
+            TextSize = 18,
+            TextXAlignment = Enum.TextXAlignment.Center,
+        })
+        local onlineDot = create("Frame", {
+            AnchorPoint = Vector2.new(1, 1),
+            Position = UDim2.new(1, 1, 1, 1),
+            Size = UDim2.fromOffset(11, 11),
+            BackgroundColor3 = Theme.Mint,
+            ZIndex = 3,
+            Parent = avatar,
+        })
+        round(onlineDot)
+        stroke(onlineDot, Color3.fromRGB(30, 16, 50), 2, 0)
+
+        text(Banner, {
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -126, 0, 12),
+            Size = UDim2.fromOffset(150, 18),
+            Text = LocalPlayer.DisplayName,
+            TextSize = 13,
+            TextXAlignment = Enum.TextXAlignment.Right,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        text(Banner, {
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -126, 0, 31),
+            Size = UDim2.fromOffset(150, 14),
+            Font = Enum.Font.GothamMedium,
+            Text = "@" .. LocalPlayer.Name,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Right,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+    end
+
+    local function headerButton(name, glyph, xOffset, hoverColor, textSize)
+        local button = create("TextButton", {
+            Name = name,
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, xOffset, 0.5, 0),
+            Size = UDim2.fromOffset(26, 26),
+            AutoButtonColor = false,
+            BackgroundColor3 = WHITE,
+            BackgroundTransparency = 0.92,
+            Font = Enum.Font.GothamBold,
+            Text = glyph,
+            TextColor3 = Theme.Text,
+            TextSize = textSize,
+            Parent = Banner,
+        })
+        corner(button, 8)
+        button.MouseEnter:Connect(function()
+            tween(button, 0.15, {BackgroundColor3 = hoverColor, BackgroundTransparency = 0.1})
+        end)
+        button.MouseLeave:Connect(function()
+            tween(button, 0.15, {BackgroundColor3 = WHITE, BackgroundTransparency = 0.92})
+        end)
+        return button
+    end
+    local HideBtn = headerButton("Hide", "×", -10, Theme.Crimson, 18)
+    local CollapseBtn = headerButton("Collapse", "—", -42, Theme.Violet, 12)
+
+    -- ---------- sidebar / content / status bar ----------
+    local Sidebar = create("Frame", {
+        Name = "Sidebar",
+        Position = UDim2.fromOffset(8, 78),
+        Size = UDim2.fromOffset(142, BODY_H),
+        BackgroundColor3 = Theme.Panel,
+        BackgroundTransparency = 0.2,
+        Parent = MainFrame,
+    })
+    corner(Sidebar, 12)
+    stroke(Sidebar, Theme.Stroke, 1, 0.5)
+
+    local Content = create("Frame", {
+        Name = "Content",
+        Position = UDim2.fromOffset(158, 78),
+        Size = UDim2.fromOffset(394, BODY_H),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        Parent = MainFrame,
+    })
+
+    local Footer = create("Frame", {
+        Name = "Footer",
+        Position = UDim2.fromOffset(8, WINDOW_H - 34),
+        Size = UDim2.new(1, -16, 0, 26),
+        BackgroundColor3 = Theme.Panel,
+        BackgroundTransparency = 0.2,
+        Parent = MainFrame,
+    })
+    corner(Footer, 8)
+    stroke(Footer, Theme.Stroke, 1, 0.5)
+    local StatusDot = create("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 11, 0.5, 0),
+        Size = UDim2.fromOffset(8, 8),
+        BackgroundColor3 = Theme.Muted,
+        Parent = Footer,
+    })
+    round(StatusDot)
+    local statusLabel = text(Footer, {
+        Name = "Status",
+        Position = UDim2.fromOffset(26, 0),
+        Size = UDim2.new(1, -236, 1, 0),
+        Font = Enum.Font.GothamMedium,
+        Text = STATUS_PREFIX .. "loading game controllers...",
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local FooterRight = text(Footer, {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -11, 0, 0),
+        Size = UDim2.new(0, 200, 1, 0),
+        Text = "FPS --   •   RShift ซ่อนเมนู",
+        TextColor3 = Theme.Muted,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    })
+
+    local function setStatus(message, color)
+        statusLabel.Text = STATUS_PREFIX .. message
+        StatusDot.BackgroundColor3 = color or Theme.Mint
+    end
+
+    -- ---------- LIVE: a light for every feature that is on ----------
+    local LIVE_ITEMS = {
+        {key = "auto", name = "Auto Fish", color = Theme.Mint},
+        {key = "perfect", name = "Perfect", color = Theme.Gold},
+        {key = "best", name = "Best Fish", color = Theme.Ember},
+        {key = "quick", name = "Quick Reel", color = Theme.Cyan},
+        {key = "cutscene", name = "Cutscene", color = Theme.Violet},
+        {key = "trip", name = "Sell Trip", color = Theme.Gold},
+        {key = "upgrade", name = "Upgrade", color = Theme.Cyan},
+        {key = "bait", name = "Bait", color = Theme.Pink},
+        {key = "fight", name = "Fight", color = Theme.Crimson},
+    }
+    local LIVE_H = 26 + #LIVE_ITEMS * 15
+
+    local LivePanel = create("Frame", {
+        Name = "Live",
+        Position = UDim2.new(0, 8, 1, -(LIVE_H + 8)),
+        Size = UDim2.new(1, -16, 0, LIVE_H),
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.25,
+        Parent = Sidebar,
+    })
+    corner(LivePanel, 10)
+    stroke(LivePanel, Theme.Stroke, 1, 0.5)
+    text(LivePanel, {
+        Position = UDim2.fromOffset(10, 6),
+        Size = UDim2.new(1, -20, 0, 14),
+        Font = Enum.Font.GothamBlack,
+        Text = "● LIVE",
+        TextColor3 = Theme.Crimson,
+        TextSize = 10,
+    })
+    local LiveCount = text(LivePanel, {
+        Position = UDim2.fromOffset(10, 6),
+        Size = UDim2.new(1, -20, 0, 14),
+        Font = Enum.Font.GothamBlack,
+        Text = "0/" .. #LIVE_ITEMS,
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    })
+
+    local liveRows = {}
+    for i, item in ipairs(LIVE_ITEMS) do
+        local y = 24 + (i - 1) * 15
+        local dot = create("Frame", {
+            Position = UDim2.fromOffset(11, y + 4),
+            Size = UDim2.fromOffset(6, 6),
+            BackgroundColor3 = Theme.Off,
+            Parent = LivePanel,
+        })
+        round(dot)
+        liveRows[item.key] = {
+            dot = dot,
+            glow = stroke(dot, item.color, 2, 1),
+            name = text(LivePanel, {
+                Position = UDim2.fromOffset(24, y),
+                Size = UDim2.new(1, -60, 0, 14),
+                Font = Enum.Font.GothamMedium,
+                Text = item.name,
+                TextColor3 = Theme.SubText,
+                TextSize = 10,
+            }),
+            state = text(LivePanel, {
+                Name = "Live_" .. item.key,
+                Position = UDim2.fromOffset(10, y),
+                Size = UDim2.new(1, -20, 0, 14),
+                Font = Enum.Font.GothamBlack,
+                Text = "OFF",
+                TextColor3 = Theme.Muted,
+                TextSize = 9,
+                TextXAlignment = Enum.TextXAlignment.Right,
+            }),
+            color = item.color,
+            on = false,
+        }
+    end
+
+    local function refreshLive()
+        local setting = cutsceneSetting()
+        local states = {
+            auto = isAutoOn(),
+            perfect = perfectCast,
+            best = bestFirst,
+            quick = quickReel,
+            cutscene = setting == "None",
+            trip = sellTrip,
+            upgrade = autoUpgrade,
+            bait = autoBait,
+            fight = fightEnabled,
+        }
+        local count = 0
+        for key, row in pairs(liveRows) do
+            local on = states[key] == true
+            if on then
+                count = count + 1
+            end
+            if on ~= row.on then
+                row.on = on
+                tween(row.dot, 0.25, {BackgroundColor3 = on and row.color or Theme.Off})
+                tween(row.name, 0.25, {TextColor3 = on and Theme.Text or Theme.SubText})
+                row.state.Text = on and "ON" or "OFF"
+                row.state.TextColor3 = on and row.color or Theme.Muted
+            end
+        end
+        LiveCount.Text = count .. "/" .. #LIVE_ITEMS
+    end
+
+    -- ---------- page pieces ----------
+    local pages = {}
+    local function createPage(id, accent)
+        local page = create("ScrollingFrame", {
+            Name = id .. "Page",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Size = UDim2.fromScale(1, 1),
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = accent,
+            ScrollBarImageTransparency = 0.2,
+            Visible = false,
+            Parent = Content,
+        })
+        create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8), Parent = page})
+        create("UIPadding", {
+            PaddingTop = UDim.new(0, 2),
+            PaddingBottom = UDim.new(0, 10),
+            PaddingLeft = UDim.new(0, 1),
+            Parent = page,
+        })
+        pages[id] = page
+        return page
+    end
+
+    local function createPageHeader(page, title, desc, accent)
+        local holder = create("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, -10, 0, 48),
+            LayoutOrder = 0,
+            Parent = page,
+        })
+        local titleLabel = text(holder, {
+            Position = UDim2.fromOffset(2, 0),
+            Size = UDim2.new(1, -4, 0, 28),
+            Font = Enum.Font.GothamBlack,
+            Text = title,
+            TextColor3 = WHITE,
+            TextSize = 22,
+        })
+        gradient(titleLabel, {WHITE, accent:Lerp(WHITE, 0.2), accent})
+        text(holder, {
+            Position = UDim2.fromOffset(2, 29),
+            Size = UDim2.new(1, -4, 0, 16),
+            Font = Enum.Font.GothamMedium,
+            Text = desc,
+            TextColor3 = Theme.SubText,
+            TextSize = 11,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+    end
+
+    local function createSection(page, title, accent, order)
+        local holder = create("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, -10, 0, 22),
+            LayoutOrder = order,
+            Parent = page,
+        })
+        local bar = create("Frame", {
+            Position = UDim2.fromOffset(2, 5),
+            Size = UDim2.fromOffset(3, 12),
+            BackgroundColor3 = WHITE,
+            BorderSizePixel = 0,
+            Parent = holder,
+        })
+        round(bar)
+        gradient(bar, {accent:Lerp(WHITE, 0.3), accent}, 90)
+        text(holder, {
+            Position = UDim2.fromOffset(12, 2),
+            Size = UDim2.new(1, -12, 0, 18),
+            Text = title,
+            TextColor3 = accent:Lerp(WHITE, 0.35),
+            TextSize = 11,
+        })
+        local line = create("Frame", {
+            Position = UDim2.new(0, 2, 1, -1),
+            Size = UDim2.new(1, -2, 0, 1),
+            BackgroundColor3 = accent,
+            BorderSizePixel = 0,
+            Parent = holder,
+        })
+        gradient(line, {accent, accent}, 0, fadeSeq({{0, 0.4}, {1, 1}}))
+    end
+
+    -- A row with an icon, a title, a line of help and an on/off switch. The row's
+    -- "On" attribute mirrors the switch. opts.onClick replaces the plain flip for
+    -- switches whose state comes from the game (Auto Fish, Skip Cutscene).
+    local function createToggle(page, opts)
+        local accent = opts.accent
+        local row = create("TextButton", {
+            Name = opts.name,
+            AutoButtonColor = false,
+            Text = "",
+            BackgroundColor3 = Theme.Card,
+            BackgroundTransparency = 0.08,
+            Size = UDim2.new(1, -10, 0, 58),
+            LayoutOrder = opts.order,
+            Parent = page,
+        })
+        corner(row, 12)
+        local rowStroke = stroke(row, Theme.Stroke, 1, 0.35)
+        attachRipple(row, accent)
+
+        local bar = create("Frame", {
+            Position = UDim2.fromOffset(0, 14),
+            Size = UDim2.fromOffset(3, 30),
+            BackgroundColor3 = accent,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Parent = row,
+        })
+        round(bar)
+        local chip = iconChip(row, opts.icon, accent, 38)
+        chip.Position = UDim2.fromOffset(12, 10)
+        text(row, {
+            Name = "Title",
+            Position = UDim2.fromOffset(60, 11),
+            Size = UDim2.new(1, -128, 0, 18),
+            Text = opts.title,
+            TextSize = 13,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local desc = text(row, {
+            Name = "Desc",
+            Position = UDim2.fromOffset(60, 30),
+            Size = UDim2.new(1, -128, 0, 16),
+            Font = Enum.Font.Gotham,
+            Text = opts.desc,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+
+        local switch = create("Frame", {
+            Name = "Switch",
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -14, 0.5, 0),
+            Size = UDim2.fromOffset(46, 24),
+            BackgroundColor3 = Theme.Off,
+            Parent = row,
+        })
+        round(switch)
+        local switchStroke = stroke(switch, Theme.Stroke, 1, 0.2)
+        local knob = create("Frame", {
+            Name = "Knob",
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 3, 0.5, 0),
+            Size = UDim2.fromOffset(18, 18),
+            BackgroundColor3 = Theme.KnobOff,
+            Parent = switch,
+        })
+        round(knob)
+
+        local toggle = {state = opts.state == true}
+        local hovered = false
+        local function render()
+            local on = toggle.state
+            local background = on and Theme.Card:Lerp(accent, 0.16) or (hovered and Theme.CardHover or Theme.Card)
+            tween(row, 0.2, {BackgroundColor3 = background})
+            tween(rowStroke, 0.25, {Color = on and accent or Theme.Stroke, Transparency = on and 0.15 or 0.35})
+            tween(bar, 0.25, {BackgroundTransparency = on and 0 or 1})
+            tween(switch, 0.25, {BackgroundColor3 = on and accent or Theme.Off})
+            tween(switchStroke, 0.25, {Color = on and accent:Lerp(WHITE, 0.35) or Theme.Stroke})
+            tween(knob, 0.35, {
+                Position = on and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+                BackgroundColor3 = on and WHITE or Theme.KnobOff,
+            }, Enum.EasingStyle.Back)
+        end
+
+        function toggle:Set(on, silent)
+            on = on == true
+            if on ~= self.state then
+                self.state = on
+                row:SetAttribute("On", on)
+                render()
+            end
+            if not silent and opts.onToggle then
+                opts.onToggle(on)
+            end
+        end
+
+        function toggle:SetDesc(value)
+            if desc.Text ~= value then
+                desc.Text = value
+            end
+        end
+
+        row.MouseEnter:Connect(function()
+            hovered = true
+            render()
+        end)
+        row.MouseLeave:Connect(function()
+            hovered = false
+            render()
+        end)
+        row.MouseButton1Click:Connect(function()
+            if opts.onClick then
+                opts.onClick()
+            else
+                toggle:Set(not toggle.state)
+            end
+        end)
+        row:SetAttribute("On", toggle.state)
+        render()
+        return toggle
+    end
+
+    -- A slider with a number box; the value is kept on the step and inside min..max.
+    local function createSlider(page, opts)
+        local accent = opts.accent
+        local fmt = "%." .. (opts.decimals or 0) .. "f"
+        local card = create("Frame", {
+            Name = opts.name,
+            BackgroundColor3 = Theme.Card,
+            BackgroundTransparency = 0.08,
+            Size = UDim2.new(1, -10, 0, 66),
+            LayoutOrder = opts.order,
+            Parent = page,
+        })
+        corner(card, 12)
+        stroke(card, Theme.Stroke, 1, 0.35)
+        text(card, {
+            Position = UDim2.fromOffset(14, 9),
+            Size = UDim2.new(1, -110, 0, 18),
+            Text = opts.title,
+            TextSize = 13,
+        })
+        text(card, {
+            Position = UDim2.fromOffset(14, 27),
+            Size = UDim2.new(1, -110, 0, 14),
+            Font = Enum.Font.Gotham,
+            Text = opts.desc,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+
+        local box = create("TextBox", {
+            Name = "Value",
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -12, 0, 10),
+            Size = UDim2.fromOffset(70, 26),
+            BackgroundColor3 = Theme.Bg,
+            BackgroundTransparency = 0.2,
+            Font = Enum.Font.GothamBold,
+            Text = "",
+            TextColor3 = accent:Lerp(WHITE, 0.3),
+            TextSize = 13,
+            ClearTextOnFocus = false,
+            Parent = card,
+        })
+        corner(box, 8)
+        local boxStroke = stroke(box, accent, 1, 0.55)
+
+        local rail = create("Frame", {
+            Position = UDim2.new(0, 14, 0, 48),
+            Size = UDim2.new(1, -28, 0, 6),
+            BackgroundColor3 = Theme.Off,
+            Parent = card,
+        })
+        round(rail)
+        local fill = create("Frame", {
+            Size = UDim2.fromScale(0, 1),
+            BackgroundColor3 = WHITE,
+            BorderSizePixel = 0,
+            Parent = rail,
+        })
+        round(fill)
+        gradient(fill, {accent:Lerp(BLACK, 0.25), accent, accent:Lerp(WHITE, 0.35)})
+        local knob = create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0, 0.5),
+            Size = UDim2.fromOffset(16, 16),
+            BackgroundColor3 = WHITE,
+            Parent = rail,
+        })
+        round(knob)
+        stroke(knob, accent, 3, 0.15)
+        local hit = create("TextButton", {
+            Text = "",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 6, 0, 38),
+            Size = UDim2.new(1, -12, 0, 26),
+            Parent = card,
+        })
+
+        local value = opts.default
+        local function render(instant)
+            local alpha = math.clamp((value - opts.min) / (opts.max - opts.min), 0, 1)
+            if instant then
+                fill.Size = UDim2.fromScale(alpha, 1)
+                knob.Position = UDim2.fromScale(alpha, 0.5)
+            else
+                tween(fill, 0.25, {Size = UDim2.fromScale(alpha, 1)})
+                tween(knob, 0.25, {Position = UDim2.fromScale(alpha, 0.5)})
+            end
+            box.Text = string.format(fmt, value)
+        end
+        local function setValue(raw, instant)
+            local stepped = math.floor(raw / opts.step + 0.5) * opts.step
+            value = tonumber(string.format(fmt, math.clamp(stepped, opts.min, opts.max)))
+            render(instant)
+            if opts.onChange then
+                opts.onChange(value)
+            end
+        end
+        local function setFromX(x)
+            local alpha = math.clamp((x - rail.AbsolutePosition.X) / math.max(rail.AbsoluteSize.X, 1), 0, 1)
+            setValue(opts.min + (opts.max - opts.min) * alpha, true)
+        end
+
+        local dragging = false
+        hit.InputBegan:Connect(function(input)
+            if isPress(input) then
+                dragging = true
+                tween(knob, 0.15, {Size = UDim2.fromOffset(20, 20)})
+                setFromX(input.Position.X)
+            end
+        end)
+        track(UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                setFromX(input.Position.X)
+            end
+        end))
+        track(UserInputService.InputEnded:Connect(function(input)
+            if dragging and isPress(input) then
+                dragging = false
+                tween(knob, 0.15, {Size = UDim2.fromOffset(16, 16)})
+            end
+        end))
+        box.Focused:Connect(function()
+            tween(boxStroke, 0.2, {Transparency = 0})
+        end)
+        box.FocusLost:Connect(function()
+            tween(boxStroke, 0.2, {Transparency = 0.55})
+            local number = tonumber(box.Text)
+            if number then
+                setValue(number)
+            else
+                render()
+            end
+        end)
+        render(true)
+    end
+
+    local function createActionRow(page, opts)
+        local accent = opts.accent
+        local row = create("TextButton", {
+            Name = opts.name,
+            AutoButtonColor = false,
+            Text = "",
+            BackgroundColor3 = Theme.Card,
+            BackgroundTransparency = 0.08,
+            Size = UDim2.new(1, -10, 0, 52),
+            LayoutOrder = opts.order,
+            Parent = page,
+        })
+        corner(row, 12)
+        local rowStroke = stroke(row, accent, 1, 0.6)
+        attachRipple(row, accent)
+        local chip = iconChip(row, opts.icon, accent, 32)
+        chip.Position = UDim2.fromOffset(12, 10)
+        text(row, {
+            Position = UDim2.fromOffset(54, 9),
+            Size = UDim2.new(1, -96, 0, 18),
+            Text = opts.title,
+            TextSize = 13,
+        })
+        text(row, {
+            Position = UDim2.fromOffset(54, 27),
+            Size = UDim2.new(1, -96, 0, 14),
+            Font = Enum.Font.Gotham,
+            Text = opts.desc,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local arrow = text(row, {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -16, 0.5, 0),
+            Size = UDim2.fromOffset(20, 20),
+            Text = "→",
+            TextColor3 = accent,
+            TextSize = 16,
+            TextXAlignment = Enum.TextXAlignment.Right,
+        })
+        row.MouseEnter:Connect(function()
+            tween(row, 0.2, {BackgroundColor3 = Theme.Card:Lerp(accent, 0.14)})
+            tween(rowStroke, 0.2, {Transparency = 0.15})
+            tween(arrow, 0.25, {Position = UDim2.new(1, -10, 0.5, 0)})
+        end)
+        row.MouseLeave:Connect(function()
+            tween(row, 0.2, {BackgroundColor3 = Theme.Card})
+            tween(rowStroke, 0.2, {Transparency = 0.6})
+            tween(arrow, 0.25, {Position = UDim2.new(1, -16, 0.5, 0)})
+        end)
+        row.MouseButton1Click:Connect(function()
+            local ok, err = pcall(opts.callback)
+            if not ok then
+                warn("[SmartAutoFish] " .. opts.title .. ": " .. tostring(err))
+                toast(opts.title, "something went wrong - details in the Volt console", Theme.Crimson, "!")
+            end
+        end)
+        return row
+    end
+
+    -- A card with an icon, a bold line, a small line and a coloured pill on the right.
+    local function createInfoCard(page, opts)
+        local card = create("Frame", {
+            Name = opts.name,
+            BackgroundColor3 = WHITE,
+            BackgroundTransparency = 0.08,
+            Size = UDim2.new(1, -10, 0, 68),
+            LayoutOrder = opts.order,
+            Parent = page,
+        })
+        corner(card, 12)
+        gradient(card, {Theme.Card:Lerp(opts.accent, 0.12), Theme.Card}, 0)
+        stroke(card, opts.accent, 1, 0.55)
+        local chip = iconChip(card, opts.icon, opts.accent, 42)
+        chip.Position = UDim2.fromOffset(12, 13)
+        local title = text(card, {
+            Name = "Title",
+            Position = UDim2.fromOffset(64, 14),
+            Size = UDim2.new(1, -180, 0, 18),
+            Text = "",
+            TextSize = 13,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local info = text(card, {
+            Name = "Info",
+            Position = UDim2.fromOffset(64, 34),
+            Size = UDim2.new(1, -76, 0, 16),
+            Font = Enum.Font.GothamMedium,
+            Text = "",
+            TextColor3 = Theme.SubText,
+            TextSize = 11,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local pill = text(card, {
+            Name = "Pill",
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -12, 0, 12),
+            Size = UDim2.fromOffset(0, 20),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundTransparency = 0.8,
+            BackgroundColor3 = Theme.Off,
+            Font = Enum.Font.GothamBlack,
+            Text = "",
+            TextSize = 9,
+        })
+        round(pill)
+        create("UIPadding", {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = pill})
+
+        local view = {}
+        function view.set(titleText, infoText, pillText, pillColor)
+            if title.Text ~= titleText then
+                title.Text = titleText
+            end
+            if info.Text ~= infoText then
+                info.Text = infoText
+            end
+            if pill.Text ~= pillText then
+                pill.Text = pillText
+                pill.TextColor3 = pillColor:Lerp(WHITE, 0.3)
+                pill.BackgroundColor3 = pillColor
+            end
+        end
+        return view
+    end
+
+    local refreshUI, cleanup -- defined further down; the rows below call them
+
+    local function perfectDesc()
+        local line = "ปล่อยเบ็ดตอนลูกศรอยู่กลางโซนเขียว"
+        if castStats.casts > 0 then
+            line = line .. string.format("  •  %d/%d", castStats.perfect, castStats.casts)
+        end
+        return line
+    end
+
+    -- ---------- page: fishing ----------
+    local FishPage = createPage("Fish", Theme.Cyan)
+    createPageHeader(FishPage, "ตกปลา", "ระบบตกอัตโนมัติของเกม + ตัวช่วยของสคริปต์", Theme.Cyan)
+    local fishCard = createInfoCard(FishPage, {name = "FishCard", icon = "◎", accent = Theme.Cyan, order = 1})
+    fishCard.set("กำลังโหลด...", "รอระบบตกปลาของเกม", "รอเกม", Theme.Muted)
+
+    createSection(FishPage, "ระบบหลัก", Theme.Mint, 2)
+    local autoToggle = createToggle(FishPage, {
+        name = "AutoFish",
+        icon = "▶",
+        title = "Auto Fish",
+        desc = "ปุ่มเดียวกับของเกม • ต้อง Lv 5 + ยืนริมน้ำ",
+        accent = Theme.Mint,
+        order = 3,
+        onClick = function()
+            if not AutoFishing then
+                setStatus("game controllers not ready", Theme.Crimson)
+                return
+            end
+            local before = isAutoOn()
+            -- Same call as the game's footer button. The game itself enforces the
+            -- Level 5 unlock and shows its own notification when it refuses.
+            local ok, err = pcall(function()
+                AutoFishing:Toggle()
+            end)
+            if not ok then
+                warn("[SmartAutoFish] Toggle failed: " .. tostring(err))
+                setStatus("toggle failed (see console)", Theme.Crimson)
+                return
+            end
+            task.wait(0.1)
+            pcall(refreshUI)
+            local on = isAutoOn()
+            if on ~= before then
+                featureToast("Auto Fish", on, Theme.Mint, "▶", "เปิดระบบตกอัตโนมัติแล้ว", "ปิดระบบตกอัตโนมัติแล้ว")
+            else
+                toast("Auto Fish", "เกมยังไม่ให้เปิด - ต้อง Lv 5 และยืนริมน้ำ", Theme.Crimson, "▶")
+            end
+        end,
+    })
+
+    createSection(FishPage, "ตัวช่วย", Theme.Gold, 4)
+    local perfectToggle
+    perfectToggle = createToggle(FishPage, {
+        name = "PerfectCast",
+        icon = "★",
+        title = "Perfect Cast",
+        desc = perfectDesc(),
+        accent = Theme.Gold,
+        order = 5,
+        state = perfectCast,
+        onToggle = function(on)
+            pcall(setPerfectCast, on)
+            perfectToggle:SetDesc(perfectDesc())
+            refreshLive()
+            featureToast("Perfect Cast", on, Theme.Gold, "★", "รอลูกศรเข้ากลางโซนเขียวก่อนปล่อย", "ปล่อยเบ็ดแบบสุ่มเหมือนเกม")
+        end,
+    })
+    createToggle(FishPage, {
+        name = "BestFish",
+        icon = "$",
+        title = "Best Fish",
+        desc = "เล็งปลาที่ขายได้แพงที่สุด (ราคาเดียวกับป้าย $)",
+        accent = Theme.Ember,
+        order = 6,
+        state = bestFirst,
+        onToggle = function(on)
+            pcall(setBestFirst, on)
+            refreshLive()
+            featureToast("Best Fish", on, Theme.Ember, "$", "เล็งตัวที่แพงที่สุดก่อน", "ให้เกมสุ่มเลือกปลาเอง")
+        end,
+    })
+    createToggle(FishPage, {
+        name = "QuickReel",
+        icon = "▲",
+        title = "Quick Reel",
+        desc = "ได้ตัวแพงแล้วดึงขึ้นเลย ไม่ลากผ่านปลาถูก",
+        accent = Theme.Cyan,
+        order = 7,
+        state = quickReel,
+        onToggle = function(on)
+            quickReel = on
+            refreshLive()
+            featureToast("Quick Reel", on, Theme.Cyan, "▲", "ดึงเบ็ดขึ้นทันทีที่ได้ตัวแพง", "ให้เกมดึงเบ็ดเอง")
+        end,
+    })
+    local cutsceneToggle = createToggle(FishPage, {
+        name = "SkipCutscene",
+        icon = "»",
+        title = "Skip Cutscene",
+        desc = "ตั้งค่าเกม Rare Catch Cutscene = None",
+        accent = Theme.Violet,
+        order = 8,
+        onClick = function()
+            local setting = cutsceneSetting()
+            if setting == nil then
+                setStatus("game settings not ready", Theme.Crimson)
+                return
+            end
+            local skip = setting ~= "None"
+            local ok, err = pcall(setCutsceneSkipped, skip)
+            if not ok then
+                warn("[SmartAutoFish] could not change the Rare Catch Cutscene setting: " .. tostring(err))
+                setStatus("setting failed (see console)", Theme.Crimson)
+                return
+            end
+            featureToast("Skip Cutscene", skip, Theme.Violet, "»", "ข้ามฉากโชว์ปลาหายาก", "แสดงฉากโชว์ปลาหายากตามเดิม")
+        end,
+    })
+
+    -- ---------- page: shops ----------
+    local ShopPage = createPage("Shop", Theme.Gold)
+    createPageHeader(ShopPage, "ขาย & อัปเกรด", "ปลาครบแล้วเดินไปขาย แล้วซื้อของที่คุ้มให้", Theme.Gold)
+    local shopCard = createInfoCard(ShopPage, {name = "ShopCard", icon = "$", accent = Theme.Gold, order = 1})
+    shopCard.set("เงิน --", "รอข้อมูลจากเกม", "รอเกม", Theme.Muted)
+
+    createSection(ShopPage, "ขายปลา", Theme.Gold, 2)
+    createToggle(ShopPage, {
+        name = "SellTrip",
+        icon = "$",
+        title = "Sell Trip",
+        desc = string.format("ครบ %d ตัว → เดินไปขาย → เข้าร้าน → กลับมาตก", SELL_AT),
+        accent = Theme.Gold,
+        order = 3,
+        state = sellTrip,
+        onToggle = function(on)
+            sellTrip = on
+            -- Switching it off during a trip stops the character where it is; you take over.
+            local stopped = not on and trip.active
+            if stopped then
+                walkCancelled = true
+                stopWalking()
+            end
+            refreshLive()
+            featureToast("Sell Trip", on, Theme.Gold, "$", "ปลาครบแล้วจะเดินไปขายให้เอง",
+                stopped and "หยุดตรงนี้ - คุณควบคุมต่อได้" or "ไม่เดินไปขายอีก")
+        end,
+    })
+
+    createSection(ShopPage, "ใช้เงินในเกม (ไม่แตะ Robux)", Theme.Cyan, 4)
+    createToggle(ShopPage, {
+        name = "AutoUpgrade",
+        icon = "+",
+        title = "Auto Upgrade",
+        desc = "ซื้อเบ็ดที่ดีกว่า + อัปเกรด ตอนยืนอยู่ในร้าน",
+        accent = Theme.Cyan,
+        order = 5,
+        state = autoUpgrade,
+        onToggle = function(on)
+            autoUpgrade = on
+            refreshLive()
+            featureToast("Auto Upgrade", on, Theme.Cyan, "+", "ซื้อเบ็ดและอัปเกรดในร้านให้", "ไม่ซื้อเบ็ดหรืออัปเกรด")
+        end,
+    })
+    createToggle(ShopPage, {
+        name = "AutoBait",
+        icon = "◆",
+        title = "Auto Bait",
+        desc = "ใช้เหยื่อดีสุดที่มี • ซื้อเพิ่มในร้านเหยื่อ",
+        accent = Theme.Pink,
+        order = 6,
+        state = autoBait,
+        onToggle = function(on)
+            autoBait = on
+            refreshLive()
+            featureToast("Auto Bait", on, Theme.Pink, "◆", "ใช้และซื้อเหยื่อให้", "ไม่แตะเหยื่อ")
+        end,
+    })
+
+    -- ---------- page: fight + script ----------
+    local FightPage = createPage("Fight", Theme.Crimson)
+    createPageHeader(FightPage, "สู้ปลา & สคริปต์", "เล่น Click Fast ให้ตอนได้ปลาหายาก", Theme.Crimson)
+    createSection(FightPage, "Click Fast", Theme.Crimson, 1)
+    createToggle(FightPage, {
+        name = "AutoFight",
+        icon = "!",
+        title = "Auto Fight",
+        desc = "กด Click Fast ให้ (ทำงานตอน Auto Fish เปิด)",
+        accent = Theme.Crimson,
+        order = 2,
+        state = fightEnabled,
+        onToggle = function(on)
+            fightEnabled = on
+            refreshLive()
+            featureToast("Auto Fight", on, Theme.Crimson, "!", "เล่น Click Fast ให้", "ปล่อยให้คุณกดเอง")
+        end,
+    })
+    createSlider(FightPage, {
+        name = "ClickSpeed",
+        title = "ความเร็วคลิก",
+        desc = string.format("ครั้งต่อวินาที • สูงสุด %d ตามที่เกมกำหนด", MAX_CPS),
+        min = MIN_CPS,
+        max = MAX_CPS,
+        step = 1,
+        decimals = 0,
+        default = clicksPerSecond,
+        accent = Theme.Crimson,
+        order = 3,
+        onChange = function(value)
+            clicksPerSecond = value
+        end,
+    })
+    createSection(FightPage, "สคริปต์", Theme.Violet, 4)
+    createActionRow(FightPage, {
+        name = "StopScript",
+        icon = "■",
+        title = "ปิดสคริปต์",
+        desc = "หยุดทุกระบบของสคริปต์และลบเมนู (ตกอัตโนมัติของเกมไม่ถูกปิด)",
+        accent = Theme.Crimson,
+        order = 5,
+        callback = function()
+            say("stopped from the panel - the game's own auto fishing is left as it is")
+            cleanup()
+        end,
+    })
+
+    -- ---------- sidebar tabs ----------
+    local TABS = {
+        {id = "Fish", name = "ตกปลา", sub = "เหวี่ยง • เลือกปลา", icon = "◎", accent = Theme.Cyan},
+        {id = "Shop", name = "ร้านค้า", sub = "ขาย • อัปเกรด", icon = "$", accent = Theme.Gold},
+        {id = "Fight", name = "อื่นๆ", sub = "สู้ปลา • สคริปต์", icon = "▲", accent = Theme.Crimson},
+    }
+    local TAB_H, TAB_GAP = 44, 5
+
+    local TabIndicator = create("Frame", {
+        Position = UDim2.fromOffset(2, 18),
+        Size = UDim2.fromOffset(3, 24),
+        BackgroundColor3 = Theme.Cyan,
+        BorderSizePixel = 0,
+        Parent = Sidebar,
+    })
+    round(TabIndicator)
+
+    local tabWidgets = {}
+    local currentTab = nil
+    local function selectTab(id)
+        if currentTab == id then
+            return
+        end
+        currentTab = id
+        for _, widget in ipairs(tabWidgets) do
+            widget.render(widget.id == id)
+            if widget.id == id then
+                tween(TabIndicator, 0.45, {
+                    Position = UDim2.fromOffset(2, widget.y + 10),
+                    BackgroundColor3 = widget.accent,
+                }, Enum.EasingStyle.Back)
+            end
+        end
+        for pageId, page in pairs(pages) do
+            if pageId == id then
+                page.Visible = true
+                page.Position = UDim2.fromOffset(24, 0)
+                tween(page, 0.35, {Position = UDim2.fromOffset(0, 0)})
+            else
+                page.Visible = false
+            end
+        end
+    end
+
+    for i, info in ipairs(TABS) do
+        local y = 8 + (i - 1) * (TAB_H + TAB_GAP)
+        local button = create("TextButton", {
+            Name = info.id .. "Tab",
+            AutoButtonColor = false,
+            Text = "",
+            Position = UDim2.fromOffset(8, y),
+            Size = UDim2.new(1, -16, 0, TAB_H),
+            BackgroundColor3 = WHITE,
+            BackgroundTransparency = 1,
+            Parent = Sidebar,
+        })
+        corner(button, 10)
+        gradient(button, {info.accent, info.accent}, 0, fadeSeq({{0, 0.55}, {1, 0.95}}))
+        local chip, chipGrad, chipStroke = iconChip(button, info.icon, info.accent, 30)
+        chip.Position = UDim2.fromOffset(7, 7)
+        local nameLabel = text(button, {
+            Position = UDim2.fromOffset(45, 6),
+            Size = UDim2.new(1, -50, 0, 18),
+            Text = info.name,
+            TextSize = 13,
+        })
+        local subLabel = text(button, {
+            Position = UDim2.fromOffset(45, 23),
+            Size = UDim2.new(1, -50, 0, 14),
+            Font = Enum.Font.GothamMedium,
+            Text = info.sub,
+            TextColor3 = Theme.Muted,
+            TextSize = 9,
+        })
+
+        local widget = {id = info.id, y = y, accent = info.accent, active = false, hovered = false}
+        function widget.render(active)
+            if active ~= nil then
+                widget.active = active
+            end
+            local on = widget.active
+            tween(button, 0.25, {BackgroundTransparency = on and 0 or (widget.hovered and 0.65 or 1)})
+            chipGrad.Color = chipSequence(on and info.accent or Theme.Off)
+            chipStroke.Transparency = on and 0.4 or 0.85
+            tween(nameLabel, 0.25, {TextColor3 = on and WHITE or Theme.SubText})
+            tween(subLabel, 0.25, {TextColor3 = on and info.accent:Lerp(WHITE, 0.4) or Theme.Muted})
+        end
+        button.MouseEnter:Connect(function()
+            widget.hovered = true
+            widget.render()
+        end)
+        button.MouseLeave:Connect(function()
+            widget.hovered = false
+            widget.render()
+        end)
+        button.MouseButton1Click:Connect(function()
+            selectTab(info.id)
+        end)
+        tabWidgets[#tabWidgets + 1] = widget
+        widget.render(false)
+    end
+
+    -- ---------- floating button that shows / hides the window ----------
+    local MenuHolder = create("Frame", {
+        Name = "MenuButton",
+        Position = UDim2.new(0.05, 0, 0.1, 0),
+        Size = UDim2.fromOffset(178, 48),
+        BackgroundTransparency = 1,
+        Parent = ScreenGui,
+    })
+    local MenuGlow = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.new(1, 10, 1, 10),
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.7,
+        Parent = MenuHolder,
+    })
+    corner(MenuGlow, 19)
+    gradient(MenuGlow, {Theme.Crimson, Theme.Violet})
+
+    local MenuBtn = create("TextButton", {
+        Name = "Open",
+        AutoButtonColor = false,
+        Text = "",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = WHITE,
+        Parent = MenuHolder,
+    })
+    corner(MenuBtn, 14)
+    gradient(MenuBtn, {Color3.fromRGB(74, 14, 42), Color3.fromRGB(34, 16, 62)})
+    spin(gradient(stroke(MenuBtn, WHITE, 2, 0), {Theme.Gold, Theme.Crimson, Theme.Violet, Theme.Cyan, Theme.Gold}), 90)
+    attachRipple(MenuBtn, Theme.Crimson)
+
+    local MenuAvatar = create("ImageLabel", {
+        Name = "PlayerThumbnail",
+        Position = UDim2.fromOffset(8, 8),
+        Size = UDim2.fromOffset(32, 32),
+        BackgroundColor3 = Color3.fromRGB(38, 31, 67),
+        ImageTransparency = 1,
+        Parent = MenuBtn,
+    })
+    round(MenuAvatar)
+    stroke(MenuAvatar, Theme.Gold, 1.5, 0)
+    local MenuInitial = text(MenuAvatar, {
+        Size = UDim2.fromScale(1, 1),
+        Font = Enum.Font.GothamBlack,
+        Text = string.sub(LocalPlayer.Name, 1, 1):upper(),
+        TextColor3 = Color3.fromRGB(255, 243, 196),
+        TextSize = 15,
+        TextXAlignment = Enum.TextXAlignment.Center,
+    })
+    local MenuTitle = text(MenuBtn, {
+        Position = UDim2.fromOffset(48, 7),
+        Size = UDim2.new(1, -56, 0, 20),
+        Font = Enum.Font.GothamBlack,
+        Text = HUB_TITLE,
+        TextColor3 = WHITE,
+        TextSize = 16,
+    })
+    shimmer(gradient(MenuTitle, TITLE_COLORS), 0.35)
+    local MenuSub = text(MenuBtn, {
+        Position = UDim2.fromOffset(48, 26),
+        Size = UDim2.new(1, -56, 0, 14),
+        Font = Enum.Font.GothamMedium,
+        Text = "เมนู: เปิดอยู่",
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+    })
+
+    -- ---------- open / hide / collapse ----------
+    local windowOpen, collapsed = true, false
+
+    local function computeScale()
+        local camera = workspace.CurrentCamera
+        local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+        return math.clamp(math.min((viewport.X - 24) / WINDOW_W, (viewport.Y - 80) / WINDOW_H), 0.5, 1)
+    end
+
+    local baseScale = computeScale()
+    local function placeWindow()
+        MainFrame.Position = UDim2.new(0.5, 0, 0.5, -math.floor(WINDOW_H * baseScale / 2))
+    end
+    WindowScale.Scale = baseScale
+    placeWindow()
+    if workspace.CurrentCamera then
+        track(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            baseScale = computeScale()
+            placeWindow()
+            if windowOpen then
+                WindowScale.Scale = baseScale
+            end
+        end))
+    end
+
+    local function setWindow(open)
+        windowOpen = open
+        MenuSub.Text = open and "เมนู: เปิดอยู่" or "เมนู: ซ่อนอยู่"
+        if open then
+            MainFrame.Visible = true
+            WindowScale.Scale = baseScale * 0.82
+            tween(WindowScale, 0.45, {Scale = baseScale}, Enum.EasingStyle.Back)
+        else
+            tween(WindowScale, 0.2, {Scale = baseScale * 0.82}, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+            task.delay(0.2, function()
+                if not windowOpen then
+                    MainFrame.Visible = false
+                end
+            end)
+        end
+    end
+
+    local function setCollapsed(state)
+        collapsed = state
+        CollapseBtn.Text = state and "+" or "—"
+        tween(MainFrame, 0.4, {Size = UDim2.fromOffset(WINDOW_W, state and COLLAPSED_H or WINDOW_H)})
+    end
+
+    makeDraggable(Banner, MainFrame)
+    local menuWasDragged = makeDraggable(MenuBtn, MenuHolder)
+
+    MenuBtn.MouseButton1Click:Connect(function()
+        if menuWasDragged() then
+            return
+        end
+        setWindow(not windowOpen)
+    end)
+    CollapseBtn.MouseButton1Click:Connect(function()
+        setCollapsed(not collapsed)
+    end)
+    -- The x only hides the window; "stop script" on the third tab stops everything.
+    HideBtn.MouseButton1Click:Connect(function()
+        setWindow(false)
+        toast("ซ่อนเมนูแล้ว", "กดปุ่ม " .. HUB_TITLE .. " หรือ RightShift เพื่อเปิด", Theme.Violet, HUB_TITLE:sub(1, 1))
+    end)
+    track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed or not alive then
+            return
+        end
+        if input.KeyCode == Enum.KeyCode.RightShift then
+            setWindow(not windowOpen)
+        end
+    end))
+
+    -- Your Roblox picture on the banner and the floating button.
+    task.spawn(function()
+        local ok, thumbnail = pcall(function()
+            local image, ready = Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+            if not ready then
+                task.wait(0.5)
+                image = Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+            end
+            return image
+        end)
+        if ok and thumbnail then
+            AvatarImage.Image = thumbnail
+            AvatarImage.ImageTransparency = 0
+            AvatarInitial.Visible = false
+            MenuAvatar.Image = thumbnail
+            MenuAvatar.ImageTransparency = 0
+            MenuInitial.Visible = false
+        end
+    end)
+
+    -- ---------- keeping the panel in step with the game ----------
+    local function statusColor()
+        if not AutoFishing then
+            return Theme.Muted
+        end
+        if shopActivity or trip.status then
+            return Theme.Gold
+        end
+        if AutoFishing.FullWarned then
+            return Theme.Crimson
+        end
+        return isAutoOn() and Theme.Mint or Theme.Muted
+    end
+
+    local function refreshFishCard(status)
+        local data = playerData()
+        local level = playerLevel()
+        local pillText, pillColor
+        if trip.active then
+            pillText, pillColor = "ไปขายของ", Theme.Gold
+        elseif isAutoOn() then
+            pillText, pillColor = "กำลังตก", Theme.Mint
+        else
+            pillText, pillColor = "หยุดอยู่", Theme.Muted
+        end
+        fishCard.set(status,
+            string.format("เลเวล %s  •  เบ็ด %s", level and tostring(level) or "?", tostring(data and data.RodEquipped or "?")),
+            pillText, pillColor)
+    end
+
+    local function refreshShopCard()
+        local data = playerData()
+        if not data then
+            return
+        end
+        local sellable = sellableFish(data)
+        local pillText, pillColor
+        if trip.active then
+            pillText, pillColor = "กำลังไปขาย", Theme.Gold
+        elseif not sellTrip then
+            pillText, pillColor = "ปิดอยู่", Theme.Muted
+        else
+            pillText, pillColor = "รอปลาครบ", Theme.Mint
+        end
+        shopCard.set("เงิน " .. shortMoney(tonumber(data.Cash) or 0),
+            string.format("ปลาที่ขายได้ %s / %d  •  เหยื่อ %d ชิ้น", sellable and tostring(sellable) or "?", SELL_AT, ownedBaits(data)),
+            pillText, pillColor)
+    end
+
+    refreshUI = function()
+        autoToggle:Set(isAutoOn(), true)
+        -- Shows the game's saved setting, so it stays right if it is changed in the game's own menu.
+        local setting = cutsceneSetting()
+        if setting ~= nil then
+            cutsceneToggle:Set(setting == "None", true)
+        end
+        perfectToggle:SetDesc(perfectDesc())
+        local status = statusText()
+        setStatus(status, statusColor())
+        refreshFishCard(status)
+        refreshLive()
+    end
+
+    cleanup = function()
+        alive = false
+        if trip.active then
+            walkCancelled = true
+            stopWalking()
+        end
+        for _, connection in ipairs(connections) do
+            pcall(function()
+                connection:Disconnect()
+            end)
+        end
+        connections = {}
+        if AutoFishing and originalDriveCast then
+            pcall(rawset, AutoFishing, "DriveCast", originalDriveCast)
+        end
+        if AutoFishing and originalPickTarget then
+            pcall(rawset, AutoFishing, "PickTarget", originalPickTarget)
+        end
+        removeArrowWatch()
+        unwatchShopEvents()
+        toastHook, StatusLabel = nil, nil
+        pcall(function()
+            ScreenGui:Destroy()
+        end)
+        if env.__SmartAutoFishStop == cleanup then
+            env.__SmartAutoFishStop = nil
+        end
+    end
+
+    refreshLive()
+    selectTab("Fish")
+
+    -- Show the panel before anything else can go wrong.
+    local attached = false
+    for _, entry in ipairs(candidateHolders()) do
+        local ok = pcall(function()
+            ScreenGui.Parent = entry[2]
+        end)
+        if ok and ScreenGui.Parent == entry[2] and ScreenGui:IsDescendantOf(game) then
+            say("panel attached to " .. entry[1])
+            attached = true
+            break
+        end
+        pcall(function()
+            ScreenGui.Parent = nil
+        end)
+    end
+    if not attached then
+        warn("[SmartAutoFish] could not attach the panel to CoreGui, gethui() or PlayerGui")
+        notify("could not show the panel - details in the Volt console")
+        return
+    end
+    StatusLabel = statusLabel
+    toastHook = function(message)
+        toast(HUB_TITLE, message, Theme.Crimson, "!", 4)
+    end
+    env.__SmartAutoFishStop = cleanup
+
+    -- ---------- animation: turning gradients, pulsing lights, sparks, title glitch ----------
+    local fpsFrames, fpsTimer, sparkTimer = 0, 0, 0
+    local glitchNext, glitchLeft, glitchAt = os.clock() + 3, 0, 0
+    local SPARK_COLORS = {Theme.Crimson, Theme.Gold, Theme.Violet, Theme.Ember}
+    track(RunService.RenderStepped:Connect(function(dt)
+        local now = os.clock()
+        for _, item in ipairs(spinners) do
+            item[1].Rotation = (now * item[2]) % 360
+        end
+        for _, item in ipairs(shimmers) do
+            item[1].Offset = Vector2.new(((now * item[2]) % 2) - 1, 0)
+        end
+        local pulse = (math.sin(now * 3.2) + 1) / 2
+        MenuGlow.BackgroundTransparency = 0.55 + pulse * 0.35
+        LogoRingStroke.Transparency = 0.1 + pulse * 0.5
+        StatusDot.BackgroundTransparency = pulse * 0.6
+        for _, row in pairs(liveRows) do
+            row.glow.Transparency = row.on and (0.2 + pulse * 0.7) or 1
+        end
+
+        fpsFrames = fpsFrames + 1
+        fpsTimer = fpsTimer + dt
+        if fpsTimer >= 0.5 then
+            FooterRight.Text = string.format("FPS %d   •   RShift ซ่อนเมนู", math.floor(fpsFrames / fpsTimer + 0.5))
+            fpsFrames, fpsTimer = 0, 0
+        end
+
+        -- Sparks rising from the banner.
+        sparkTimer = sparkTimer + dt
+        if sparkTimer >= 0.12 then
+            sparkTimer = 0
+            if MainFrame.Visible then
+                local size = math.random(2, 4)
+                local spark = create("Frame", {
+                    BorderSizePixel = 0,
+                    BackgroundColor3 = SPARK_COLORS[math.random(#SPARK_COLORS)],
+                    BackgroundTransparency = 0.15,
+                    Size = UDim2.fromOffset(size, size),
+                    Position = UDim2.fromOffset(math.random(60, 520), 60),
+                    ZIndex = 0,
+                    Parent = Banner,
+                })
+                round(spark)
+                local life = math.random(12, 22) / 10
+                tween(spark, life, {
+                    Position = spark.Position + UDim2.fromOffset(math.random(-14, 14), -math.random(25, 55)),
+                    BackgroundTransparency = 1,
+                }, Enum.EasingStyle.Sine)
+                task.delay(life, function()
+                    spark:Destroy()
+                end)
+            end
+        end
+
+        -- Every few seconds the title ghosts jitter for a few frames.
+        if glitchLeft > 0 then
+            if now >= glitchAt then
+                glitchLeft = glitchLeft - 1
+                glitchAt = now + 0.05
+                if glitchLeft > 0 then
+                    TitleGhostA.Position = GHOST_A_POS + UDim2.fromOffset(math.random(-4, 4), math.random(-2, 2))
+                    TitleGhostB.Position = GHOST_B_POS + UDim2.fromOffset(math.random(-4, 4), math.random(-2, 2))
+                else
+                    TitleGhostA.Position = GHOST_A_POS
+                    TitleGhostB.Position = GHOST_B_POS
+                    glitchNext = now + math.random(25, 50) / 10
+                end
+            end
+        elseif now >= glitchNext then
+            glitchLeft, glitchAt = 5, now
+        end
+    end))
+
+    -- ---------- loops ----------
+    spawnGuarded("startup", function()
+        local ok, err = bindGame()
+        if not ok then
+            warn("[SmartAutoFish] " .. tostring(err))
+            notify(tostring(err))
+            setStatus(tostring(err), Theme.Crimson)
+            fishCard.set("โหลดระบบเกมไม่สำเร็จ", tostring(err), "ERROR", Theme.Crimson)
+            return
+        end
+        pcall(setPerfectCast, perfectCast)
+        pcall(setBestFirst, bestFirst)
+        local cutsceneBefore = cutsceneSetting()
+        say(string.format("hooked into the game's fishing controllers | level=%s | auto fishing=%s | hook meter=%s | rare cutscene=%s",
+            tostring(playerLevel()), isAutoOn() and "ON" or "OFF", hookMeter and "found" or "not yet", tostring(cutsceneBefore)))
+        local okCutscene, cutsceneErr = pcall(setCutsceneSkipped, true)
+        if not okCutscene then
+            warn("[SmartAutoFish] could not turn off the Rare Catch Cutscene: " .. tostring(cutsceneErr))
+        elseif cutsceneBefore and cutsceneBefore ~= "None" then
+            say("Skip Cutscene: changed the game's Rare Catch Cutscene setting from " .. cutsceneBefore .. " to None")
+        end
+        watchShopEvent("RodShop", "rod shop")
+        watchShopEvent("BaitShop", "bait shop")
+        local data = playerData()
+        say(string.format("Auto Upgrade=%s | Auto Bait=%s | Sell Trip=%s | cash=%s | rod=%s | fish to sell=%s",
+            autoUpgrade and "ON" or "OFF", autoBait and "ON" or "OFF", sellTrip and "ON" or "OFF",
+            shortMoney(tonumber(data and data.Cash) or 0), tostring(data and data.RodEquipped),
+            tostring(data and sellableFish(data))))
+        if not interactable("NPC_Sell") then
+            warn("[SmartAutoFish] Sell Trip: no sell NPC found in this world - trips cannot run here")
+        end
+        local ticks = 0
+        while alive do
+            pcall(function()
+                if isAutoOn() then
+                    ensureRod()
+                end
+                refreshUI()
+                -- The money card counts the whole bag, so once a second is plenty.
+                if ticks % 4 == 0 then
+                    refreshShopCard()
+                end
+            end)
+            ticks = ticks + 1
+            task.wait(0.25)
+        end
+    end)
+
+    spawnGuarded("target loop", function()
+        local quickReelWarned = false
+        while alive do
+            if AutoFishing then
+                pcall(upgradeTarget)
+                pcall(trackCastValue)
+                local ok, err = pcall(quickReelCheck)
+                if not ok and not quickReelWarned then
+                    quickReelWarned = true
+                    warn("[SmartAutoFish] Quick Reel failed, the game reels in by itself instead: " .. tostring(err))
+                end
+            end
+            task.wait(0.1)
+        end
+    end)
+
+    spawnGuarded("shop loop", function()
+        local shopErrorWarned = false
+        while alive do
+            if AutoFishing then
+                local ok, err = pcall(shopTick)
+                if not ok then
+                    shopActivity = nil
+                    if not shopErrorWarned then
+                        shopErrorWarned = true
+                        warn("[SmartAutoFish] Auto Upgrade / Auto Bait failed: " .. tostring(err))
+                    end
+                end
+            end
+            task.wait(SHOP_INTERVAL)
+        end
+    end)
+
+    spawnGuarded("trip loop", function()
+        while alive and not AutoFishing do
+            task.wait(0.5)
+        end
+        if alive then
+            resumeAfterRejoin()
+        end
+        while alive do
+            local data = playerData()
+            local sellable = data and tripDue(data)
+            if sellable then
+                runTrip(sellable)
+            end
+            task.wait(2)
+        end
+    end)
+
+    spawnGuarded("fight loop", function()
+        while alive do
+            if fightEnabled and isAutoOn() and isFightActive() then
+                clickFight()
+                task.wait((1 / clicksPerSecond) * (0.85 + math.random() * 0.3))
+            else
+                task.wait(0.1)
+            end
+        end
+    end)
+
+    -- Intro: the window springs open and the title types itself in.
+    task.spawn(function()
+        local layers = {TitleMain, TitleGhostA, TitleGhostB}
+        for _, label in ipairs(layers) do
+            label.MaxVisibleGraphemes = 0
+        end
+        MainFrame.Visible = true
+        WindowScale.Scale = baseScale * 0.5
+        tween(WindowScale, 0.7, {Scale = baseScale}, Enum.EasingStyle.Back)
+        task.wait(0.3)
+        for i = 1, #HUB_TITLE do
+            for _, label in ipairs(layers) do
+                label.MaxVisibleGraphemes = i
+            end
+            task.wait(0.05)
+        end
+        for _, label in ipairs(layers) do
+            label.MaxVisibleGraphemes = -1
+        end
+        if alive then
+            toast(HUB_TITLE .. " พร้อมลุย!", "ยินดีต้อนรับ " .. LocalPlayer.DisplayName, Theme.Crimson, HUB_TITLE:sub(1, 1), 3.5)
+        end
+    end)
+
+    say("panel ready")
+end
+
+local ok, err = xpcall(main, function(e)
+    return traceback(tostring(e), 2)
+end)
+if not ok then
+    reportError("startup", err)
+end
