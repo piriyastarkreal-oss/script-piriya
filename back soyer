@@ -1,0 +1,4282 @@
+--[[
+	⛏ Back Soyer · All-in-One AFK  (v2.1)
+
+	วิธีใช้
+	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
+	- หน้าต่างจะเปิดขึ้นมา ทุกระบบเปิด/ปิดได้ทีละอัน ค่าที่ตั้งจะถูกจำไว้ (ไฟล์ BackSoyer_config.json)
+	- ซ่อน/แสดงหน้าต่าง: ปุ่ม RightControl (เปลี่ยนได้ในแท็บ Misc) หรือปุ่ม "⛏ Back Soyer" ที่ขอบจอซ้าย
+	- ครั้งแรก: เดินไปเหยียบแท่นขาย (Sell Ores) เอง 1 ครั้ง สคริปต์จะจำตำแหน่งไว้ถาวร
+
+	AFK ข้ามคืน
+	- เปิด Anti-AFK (กันโดนเตะเพราะไม่ขยับ) และ Auto Rejoin (หลุดแล้วเข้าเกมใหม่เอง)
+	- เซฟไฟล์นี้ชื่อ BackSoyer.lua ไว้ในโฟลเดอร์ workspace ของ Volt (หรือโฟลเดอร์ autoexec)
+	  พอเข้าเกมใหม่ สคริปต์จะรันต่อเองพร้อมค่าที่ตั้งไว้
+
+	เกมเช็คระยะที่เซิร์ฟเวอร์ (Stock / เตา / แท่นขาย / ป้ายอัพเกรด / แท่นสุ่ม) สคริปต์จึงวาปไปแป๊บเดียวแล้ววาปกลับ
+	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
+]]
+
+local VERSION = "2.1"
+local SCRIPT_FILE = "BackSoyer.lua"
+local CONFIG_FILE = "BackSoyer_config.json"
+-- ชื่อเดิมตอนยังเป็น Mine Hub (อ่านค่าเก่าต่อได้ + เข้าเกมใหม่แล้วรันไฟล์เก่าได้ถ้ายังไม่ได้เซฟชื่อใหม่)
+local LEGACY_SCRIPT_FILE = "MineHub.lua"
+local LEGACY_CONFIG_FILE = "MineHub_config.json"
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local CollectionService = game:GetService("CollectionService")
+local TeleportService = game:GetService("TeleportService")
+local GuiService = game:GetService("GuiService")
+
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui")
+
+---------------------------------------------------------------------
+-- 1) รันซ้ำ: ปิดตัวเก่าทั้งหมดก่อน (รวมสคริปต์รุ่นก่อน ๆ)
+---------------------------------------------------------------------
+local env = (typeof(getgenv) == "function" and getgenv()) or _G
+for _, key in { "BackSoyer_Cleanup", "MineHub_Cleanup", "AllInOne_Cleanup", "AutoStock_Cleanup", "SpectateUI_Cleanup" } do
+	if typeof(env[key]) == "function" then
+		pcall(env[key])
+		env[key] = nil
+	end
+end
+
+local running = true
+local paused = false
+local connections: { RBXScriptConnection } = {}
+local function connect(signal: RBXScriptSignal, fn): RBXScriptConnection
+	local conn = signal:Connect(fn)
+	table.insert(connections, conn)
+	return conn
+end
+
+---------------------------------------------------------------------
+-- 2) ตั้งค่า (บันทึกลงไฟล์ถ้า executor รองรับ)
+---------------------------------------------------------------------
+local DEFAULTS = {
+	-- Farm
+	autoStock = true,
+	sellMode = "gamble",
+	sellEvery = 5,
+	claimAway = true,
+	quickTp = true,
+	returnHome = true,
+	hopWait = 0.25,
+	-- Upgrades
+	autoUpgrade = true,
+	upgradeMode = "progress",
+	reservePct = 0,
+	upgradeEvery = 10,
+	up_OreValue = true,
+	up_MineSpeed = true,
+	up_RollLuck = true,
+	up_StockCap = true,
+	up_HaulSpeed = true,
+	up_HaulCarry = true,
+	up_WalkSpeed = false,
+	upMine = true,
+	upQuarry = true,
+	upPedestal = true,
+	upDoors = true,
+	upFarm = true,
+	store_BagSpace = true,
+	store_PetSpace = true,
+	store_EggSpace = true,
+	store_SpeedBoots = false,
+	-- Roll
+	autoRoll = true,
+	rollMinRarity = "Rare",
+	rollMaxSpendPct = 80,
+	useGameAutoRoll = true,
+	pullLever = true,
+	equipBest = true,
+	bagAutoDelete = false,
+	-- Index
+	autoIndex = true,
+	indexPets = true,
+	indexMaxSpendPct = 100,
+	-- Pets
+	autoHatch = true,
+	buyEggs = true,
+	eggMaxSpendPct = 25,
+	petEquipBest = true,
+	unlockFarm = true,
+	-- Rewards
+	daily = true,
+	quests = true,
+	spin = true,
+	groupReward = true,
+	openRx = true,
+	drinkPotions = true,
+	drinkSpeed = false,
+	buyPotions = true,
+	potionMaxSpendPct = 40,
+	storePotions = true,
+	spinTickets = false,
+	-- Misc
+	antiAfk = true,
+	autoRejoin = true,
+	lowGfx = false,
+	toasts = true,
+	uiKey = "RightControl",
+	uiOpen = true,
+}
+
+local canFile = typeof(writefile) == "function" and typeof(readfile) == "function" and typeof(isfile) == "function"
+local config = table.clone(DEFAULTS)
+
+do
+	local function applySaved(data)
+		if type(data) ~= "table" then
+			return
+		end
+		for key, value in data do
+			if DEFAULTS[key] ~= nil and type(value) == type(DEFAULTS[key]) then
+				config[key] = value
+			elseif key == "sellPadRel" and type(value) == "table" and #value == 3 then
+				config.sellPadRel = value
+			end
+		end
+	end
+
+	applySaved(env.MineHub_Config)
+	applySaved(env.BackSoyer_Config)
+	if canFile then
+		-- ไฟล์ชื่อใหม่ก่อน ถ้ายังไม่มีใช้ค่าจากไฟล์ของ Mine Hub (ตำแหน่งแท่นขายไม่หาย)
+		local ok, data = pcall(function()
+			for _, fileName in { CONFIG_FILE, LEGACY_CONFIG_FILE } do
+				if isfile(fileName) then
+					return HttpService:JSONDecode(readfile(fileName))
+				end
+			end
+			return nil
+		end)
+		if ok then
+			applySaved(data)
+		end
+	end
+end
+
+local saveQueued = false
+local function saveConfig()
+	env.BackSoyer_Config = config
+	if not canFile or saveQueued then
+		return
+	end
+	saveQueued = true
+	task.delay(1, function()
+		saveQueued = false
+		pcall(function()
+			writefile(CONFIG_FILE, HttpService:JSONEncode(config))
+		end)
+	end)
+end
+
+---------------------------------------------------------------------
+-- 3) ข้อมูลเกม (require โมดูลของเกมเอง ถ้าโหลดไม่ได้จะใช้ค่าสำรอง)
+---------------------------------------------------------------------
+local Shared = ReplicatedStorage:WaitForChild("Shared", 20)
+local remoteFolder = ReplicatedStorage:WaitForChild("RemoteEvents", 20)
+
+local function safeRequire(name: string): any
+	local module = Shared and Shared:FindFirstChild(name)
+	if not module then
+		return nil
+	end
+	local ok, result = pcall(require, module)
+	return if ok then result else nil
+end
+
+local Economy = safeRequire("Economy")
+local Upgrades = safeRequire("Upgrades")
+local MinerCatalog = safeRequire("MinerCatalog")
+local PetCatalog = safeRequire("PetCatalog")
+local PetFarm = safeRequire("PetFarm")
+local Potions = safeRequire("Potions")
+local GeneralStore = safeRequire("GeneralStore")
+local SpinWheel = safeRequire("SpinWheel")
+local WeatherInfo = safeRequire("Weather")
+
+local SMELTED = (Economy and Economy.SMELTED) or "Smelted"
+local SMELT_OUT_CAP = (Economy and Economy.SMELT_OUT_CAP) or 18
+local SPIN_TIME = (SpinWheel and SpinWheel.SPIN_TIME) or 5
+local SAFE_MULT = (Economy and Economy.SMELT_SAFE) or 1.25
+local GAMBLE_EV = 1.3175
+if Economy and Economy.gambleExpected then
+	local ok, ev = pcall(Economy.gambleExpected)
+	if ok and type(ev) == "number" then
+		GAMBLE_EV = ev
+	end
+end
+
+local RARITY_NAMES = {}
+local RARITY_COLORS = {
+	Common = Color3.fromRGB(206, 210, 216),
+	Uncommon = Color3.fromRGB(96, 226, 96),
+	Rare = Color3.fromRGB(70, 156, 255),
+	Epic = Color3.fromRGB(240, 92, 48),
+	Legendary = Color3.fromRGB(255, 192, 40),
+	Mythic = Color3.fromRGB(176, 84, 255),
+	Exotic = Color3.fromRGB(80, 240, 96),
+	Celestial = Color3.fromRGB(150, 196, 255),
+}
+if MinerCatalog and MinerCatalog.RARITIES then
+	for _, rarity in ipairs(MinerCatalog.RARITIES) do
+		table.insert(RARITY_NAMES, rarity.name)
+		RARITY_COLORS[rarity.name] = rarity.color or RARITY_COLORS[rarity.name]
+	end
+else
+	RARITY_NAMES = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Exotic", "Celestial" }
+end
+
+local function rarityTier(name: string?): number
+	return (name and table.find(RARITY_NAMES, name)) or 0
+end
+
+local function rarityColor(name: string?): Color3
+	return (name and RARITY_COLORS[name]) or Color3.new(1, 1, 1)
+end
+
+local STAT_ORDER = (Upgrades and Upgrades.ORDER)
+	or { "OreValue", "WalkSpeed", "MineSpeed", "RollLuck", "StockCap", "HaulSpeed", "HaulCarry" }
+local STAT_INFO = {
+	OreValue = { title = "Ore Value", desc = "ราคาแร่ทุกชนิด x1.03 ต่อเลเวล คุ้มที่สุดสำหรับรายได้" },
+	MineSpeed = { title = "Mine Speed", desc = "miner ขุดแร่เร็วขึ้น" },
+	RollLuck = { title = "Roll Luck", desc = "โอกาสสุ่มได้ miner rarity สูงขึ้น" },
+	StockCap = { title = "Stock Size", desc = "Stock เก็บแร่ได้มากขึ้นก่อนเต็ม" },
+	HaulSpeed = { title = "Hauler Speed", desc = "คนขนแร่เดินเร็วขึ้น" },
+	HaulCarry = { title = "Hauler Carry", desc = "คนขนแร่ขนได้มากขึ้นต่อรอบ" },
+	WalkSpeed = { title = "Walk Speed", desc = "เดินเร็วขึ้น ไม่ช่วยตอน AFK เพราะสคริปต์วาปให้อยู่แล้ว" },
+}
+
+local minerModelsFolder: Instance? = nil
+local function getMinerModels(): Instance?
+	if not (minerModelsFolder and minerModelsFolder.Parent) then
+		minerModelsFolder = ReplicatedStorage:FindFirstChild((MinerCatalog and MinerCatalog.MODELS_FOLDER) or "MinerModels")
+	end
+	return minerModelsFolder
+end
+
+---------------------------------------------------------------------
+-- 4) ตัวช่วยทั่วไป
+---------------------------------------------------------------------
+local function fire(name: string, ...): boolean
+	local remote = remoteFolder and remoteFolder:FindFirstChild(name)
+	if remote and (remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent")) then
+		remote:FireServer(...)
+		return true
+	end
+	return false
+end
+
+-- RemoteFunction แบบมี timeout (กันค้างถ้าเซิร์ฟเวอร์ไม่ตอบ)
+local function invoke(name: string, timeout: number, ...): (boolean, any)
+	local remote = remoteFolder and remoteFolder:FindFirstChild(name)
+	if not (remote and remote:IsA("RemoteFunction")) then
+		return false, "ไม่พบ " .. name
+	end
+	local args = table.pack(...)
+	local done, ok, result = false, false, nil
+	task.spawn(function()
+		ok, result = pcall(function()
+			return remote:InvokeServer(table.unpack(args, 1, args.n))
+		end)
+		done = true
+	end)
+	local started = os.clock()
+	while not done and os.clock() - started < timeout do
+		task.wait(0.05)
+	end
+	if not done then
+		return false, "timeout"
+	end
+	return ok, result
+end
+
+local function decode(value: any): { [any]: any }
+	if type(value) ~= "string" or value == "" then
+		return {}
+	end
+	local ok, data = pcall(HttpService.JSONDecode, HttpService, value)
+	return if ok and type(data) == "table" then data else {}
+end
+
+local function num(value: any, default: number?): number
+	return tonumber(value) or default or 0
+end
+
+local function pAttr(name: string): any
+	return localPlayer:GetAttribute(name)
+end
+
+local function cash(): number
+	return num(pAttr("Cash"))
+end
+
+local SHORT_SUFFIX = { "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
+local function fmtCash(value: any): string
+	local n = math.floor(num(value))
+	if Economy and Economy.formatCash and n >= 0 then
+		local ok, textValue = pcall(Economy.formatCash, n)
+		if ok and type(textValue) == "string" then
+			return textValue
+		end
+	end
+	local sign = if n < 0 then "-" else ""
+	n = math.abs(n)
+	if n < 10000 then
+		return sign .. "$" .. tostring(n)
+	end
+	local index = math.min(math.floor(math.log10(n) / 3), #SHORT_SUFFIX)
+	return sign .. "$" .. (string.format("%.1f", n / 10 ^ (index * 3)):gsub("%.0$", "")) .. SHORT_SUFFIX[index]
+end
+
+local function fmtTime(seconds: number): string
+	seconds = math.max(0, math.floor(seconds))
+	local h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
+	if h > 0 then
+		return string.format("%d:%02d:%02d", h, m, s)
+	end
+	return string.format("%d:%02d", m, s)
+end
+
+local function colorHex(color: Color3): string
+	return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+end
+
+local function waitFor(condition: () -> boolean, timeout: number): boolean
+	local started = os.clock()
+	while os.clock() - started < timeout do
+		if condition() then
+			return true
+		end
+		task.wait(0.05)
+	end
+	return condition()
+end
+
+local function getRoot(): BasePart?
+	local character = localPlayer.Character
+	return character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+end
+
+local function getHumanoid(player: Player?): Humanoid?
+	local character = (player or localPlayer).Character
+	return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function alive(): boolean
+	local humanoid = getHumanoid()
+	return getRoot() ~= nil and humanoid ~= nil and humanoid.Health > 0
+end
+
+local function posOf(obj: Instance?): Vector3?
+	if not obj then
+		return nil
+	end
+	if obj:IsA("Attachment") then
+		return obj.WorldPosition
+	elseif obj:IsA("BasePart") then
+		return obj.Position
+	elseif obj:IsA("Model") then
+		return obj:GetPivot().Position
+	end
+	return nil
+end
+
+local function nearPos(pos: Vector3, distance: number): boolean
+	local root = getRoot()
+	return root ~= nil and (root.Position - pos).Magnitude <= distance
+end
+
+local function plotId(): any
+	return pAttr("Plot")
+end
+
+local function mineBuildings(): Instance?
+	local map = workspace:FindFirstChild("BaseMap")
+	return map and map:FindFirstChild("MineBuildings")
+end
+
+-- สิ่งก่อสร้างของแปลงเรา เช่น Stock_N, Smeltery_N, Shop_N, RollArea_N
+local function myBuilding(prefix: string): Instance?
+	local buildings, plot = mineBuildings(), plotId()
+	if not buildings or plot == nil then
+		return nil
+	end
+	return buildings:FindFirstChild(prefix .. "_" .. tostring(plot))
+end
+
+-- ฟาร์มสัตว์ของเรา (Farm_* ที่ Owner เป็นเรา)
+local function myFarm(): Instance?
+	local buildings = mineBuildings()
+	if not buildings then
+		return nil
+	end
+	for _, model in buildings:GetChildren() do
+		if model.Name:match("^Farm_") and model:GetAttribute("Owner") == localPlayer.UserId then
+			return model
+		end
+	end
+	local plot = plotId()
+	return if plot ~= nil then buildings:FindFirstChild("Farm_" .. tostring(plot)) else nil
+end
+
+local function hubProp(name: string): Instance?
+	local map = workspace:FindFirstChild("BaseMap")
+	local props = map and map:FindFirstChild("HubProps")
+	return props and props:FindFirstChild(name)
+end
+
+-- จุดยืนหน้าร้านในเมือง (ใช้ตำแหน่งปุ่มเปิดร้านของเกม)
+local function hubSpot(propName: string, promptName: string?): CFrame?
+	local prop = hubProp(propName)
+	if not prop then
+		return nil
+	end
+	local prompt = promptName and prop:FindFirstChild(promptName, true)
+	local pos = prompt and posOf(prompt.Parent)
+	if pos then
+		return CFrame.new(pos + Vector3.new(0, 3, 0))
+	end
+	local ok, pivot = pcall(function()
+		return (prop :: any):GetPivot()
+	end)
+	if not ok then
+		return nil
+	end
+	return CFrame.new(pivot.Position + pivot.LookVector * 8 + Vector3.new(0, 3, 0))
+end
+
+-- พักการกระทำที่ทำไม่สำเร็จไว้ชั่วคราว กันสคริปต์วาปวนไม่จบ
+local backoff: { [string]: number } = {}
+local function cooling(key: string): boolean
+	return (backoff[key] or 0) > os.clock()
+end
+local function cool(key: string, seconds: number)
+	backoff[key] = os.clock() + seconds
+end
+
+-- miner ทั้งหมดในเกมแยกตาม rarity (ใช้ฟังก์ชันของเกมเอง) เก็บผลไว้ 30 วิ
+local poolCache: { [string]: { string } }? = nil
+local poolCachedAt = 0
+local function minerPool(): { [string]: { string } }
+	if poolCache and os.clock() - poolCachedAt < 30 then
+		return poolCache
+	end
+	local pool = {}
+	local folder = getMinerModels()
+	if MinerCatalog and MinerCatalog.poolFrom and folder then
+		local ok, result = pcall(MinerCatalog.poolFrom, folder)
+		if ok and type(result) == "table" then
+			pool = result
+		end
+	end
+	poolCache, poolCachedAt = pool, os.clock()
+	return pool
+end
+
+-- สมุดสะสม (Index): attribute Index = {"m": [miner ที่มีแล้ว], "p": [สัตว์ที่มีแล้ว]}
+local function indexSets(): ({ [string]: boolean }, { [string]: boolean })
+	local data = decode(pAttr("Index"))
+	local miners, pets = {}, {}
+	for _, key in (type(data.m) == "table" and data.m) or {} do
+		miners[key] = true
+	end
+	for _, id in (type(data.p) == "table" and data.p) or {} do
+		pets[id] = true
+	end
+	return miners, pets
+end
+
+local function minerDisplayName(key: string): string
+	local folder = getMinerModels()
+	local model = folder and folder:FindFirstChild(key)
+	return (model and model:GetAttribute("DisplayName")) or key
+end
+
+---------------------------------------------------------------------
+-- 5) UI: ชิ้นส่วนพื้นฐาน
+---------------------------------------------------------------------
+local Theme = {
+	bg = Color3.fromRGB(17, 19, 26),
+	panel = Color3.fromRGB(26, 29, 38),
+	panel2 = Color3.fromRGB(37, 41, 53),
+	stroke = Color3.fromRGB(56, 61, 78),
+	text = Color3.fromRGB(236, 239, 245),
+	sub = Color3.fromRGB(148, 156, 174),
+	accent = Color3.fromRGB(255, 186, 56),
+	good = Color3.fromRGB(82, 208, 116),
+	off = Color3.fromRGB(68, 73, 90),
+	bad = Color3.fromRGB(240, 90, 90),
+	info = Color3.fromRGB(96, 170, 255),
+}
+local FONT = Enum.Font.GothamMedium
+local FONT_BOLD = Enum.Font.GothamBold
+
+type Row = { setStatus: (string?, Color3?) -> (), set: (boolean) -> () }
+-- ของที่ซื้อได้: place = ป้าย/ร้านที่ต้องไปยืน (ซื้อหลายอย่างที่เดียวกันได้ในการวาปครั้งเดียว), spot = จุดยืน
+type Candidate = { name: string, title: string?, cost: number, big: boolean?, place: any, spot: (() -> CFrame?)?, buy: () -> boolean }
+type MinerInfo = { key: string, name: string, rarity: string, tier: number, price: number, mut: any, revealAt: number, rollId: any }
+
+local function new(className: string, props: { [string]: any }?, children: { Instance }?): any
+	local inst = Instance.new(className)
+	local parent = nil
+	for key, value in props or {} do
+		if key == "Parent" then
+			parent = value
+		else
+			(inst :: any)[key] = value
+		end
+	end
+	for _, child in children or {} do
+		child.Parent = inst
+	end
+	if parent then
+		inst.Parent = parent
+	end
+	return inst
+end
+
+local function corner(radius: number)
+	return new("UICorner", { CornerRadius = UDim.new(0, radius) })
+end
+
+local function stroke(color: Color3, thickness: number?)
+	return new("UIStroke", { Color = color, Thickness = thickness or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border })
+end
+
+local function padding(top: number, right: number?, bottom: number?, left: number?)
+	return new("UIPadding", {
+		PaddingTop = UDim.new(0, top),
+		PaddingRight = UDim.new(0, right or top),
+		PaddingBottom = UDim.new(0, bottom or top),
+		PaddingLeft = UDim.new(0, left or right or top),
+	})
+end
+
+local function vlist(gap: number?)
+	return new("UIListLayout", { Padding = UDim.new(0, gap or 0), SortOrder = Enum.SortOrder.LayoutOrder })
+end
+
+local function hlist(gap: number?)
+	return new("UIListLayout", {
+		Padding = UDim.new(0, gap or 0),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+	})
+end
+
+local function tween(inst: Instance, props: { [string]: any }, duration: number?)
+	TweenService:Create(inst, TweenInfo.new(duration or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+local function text(props: { [string]: any }): TextLabel
+	local merged = {
+		BackgroundTransparency = 1,
+		Font = FONT,
+		TextColor3 = Theme.text,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}
+	for key, value in props do
+		merged[key] = value
+	end
+	return new("TextLabel", merged)
+end
+
+local function paragraph(props: { [string]: any }): TextLabel
+	props.TextWrapped = true
+	props.AutomaticSize = Enum.AutomaticSize.Y
+	props.Size = props.Size or UDim2.new(1, 0, 0, 0)
+	return text(props)
+end
+
+local function button(props: { [string]: any }): TextButton
+	local merged = {
+		AutoButtonColor = true,
+		Font = FONT_BOLD,
+		TextSize = 13,
+		TextColor3 = Theme.text,
+		BackgroundColor3 = Theme.panel2,
+	}
+	for key, value in props do
+		merged[key] = value
+	end
+	return new("TextButton", merged, { corner(8) })
+end
+
+---------------------------------------------------------------------
+-- 6) UI: หน้าต่างหลัก
+---------------------------------------------------------------------
+local gui = new("ScreenGui", {
+	Name = "BackSoyer",
+	ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	DisplayOrder = 60,
+})
+do
+	local parent: Instance = playerGui
+	if typeof(gethui) == "function" then
+		local ok, hui = pcall(gethui)
+		if ok and hui then
+			parent = hui
+		end
+	end
+	gui.Parent = parent
+end
+
+local WIN_W, WIN_H = 640, 460
+
+local window = new("Frame", {
+	Name = "Window",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(WIN_W, WIN_H),
+	BackgroundColor3 = Theme.bg,
+	Active = true,
+	ClipsDescendants = true,
+	Parent = gui,
+}, { corner(14), stroke(Theme.stroke, 1) })
+
+local activityLabel: TextLabel
+local infoLine: TextLabel
+local chrome: { [string]: TextButton } = {}
+local stats: { [string]: TextLabel } = {}
+local pages: { [string]: ScrollingFrame } = {}
+local selectTab: (string) -> ()
+local addTab: (string, string, string, number) -> ScrollingFrame
+
+do
+	-- ย่อหน้าต่างอัตโนมัติถ้าจอเล็ก
+	local uiScale = new("UIScale", { Parent = window })
+	local function fitScale()
+		local camera = workspace.CurrentCamera
+		if not camera then
+			return
+		end
+		local viewport = camera.ViewportSize
+		uiScale.Scale = math.clamp(math.min((viewport.X - 24) / WIN_W, (viewport.Y - 24) / WIN_H), 0.5, 1)
+	end
+	fitScale()
+	if workspace.CurrentCamera then
+		connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), fitScale)
+	end
+
+	-- แถบหัวหน้าต่าง
+	local titleBar = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 46),
+		BackgroundColor3 = Theme.panel,
+		Parent = window,
+	}, { corner(14) })
+	new("Frame", {
+		Size = UDim2.new(1, 0, 0, 14),
+		Position = UDim2.new(0, 0, 1, -14),
+		BackgroundColor3 = Theme.panel,
+		BorderSizePixel = 0,
+		Parent = titleBar,
+	})
+	text({ Text = "⛏", TextSize = 22, Size = UDim2.fromOffset(36, 46), Position = UDim2.fromOffset(8, 0), TextXAlignment = Enum.TextXAlignment.Center, Parent = titleBar })
+	text({ Text = "Back Soyer  ·  v" .. VERSION, Font = FONT_BOLD, TextSize = 16, Size = UDim2.fromOffset(240, 22), Position = UDim2.fromOffset(46, 4), Parent = titleBar })
+	activityLabel = text({
+		Text = "กำลังเริ่ม...",
+		TextSize = 12,
+		TextColor3 = Theme.sub,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, -260, 0, 16),
+		Position = UDim2.fromOffset(46, 25),
+		Parent = titleBar,
+	})
+
+	chrome.close = button({
+		Text = "×",
+		TextSize = 18,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -10, 0.5, 0),
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundColor3 = Color3.fromRGB(78, 44, 50),
+		Parent = titleBar,
+	})
+	chrome.minimize = button({
+		Text = "–",
+		TextSize = 18,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -46, 0.5, 0),
+		Size = UDim2.fromOffset(30, 30),
+		Parent = titleBar,
+	})
+	chrome.pause = button({
+		Text = "⏸ หยุดทั้งหมด",
+		TextSize = 12,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -82, 0.5, 0),
+		Size = UDim2.fromOffset(112, 30),
+		Parent = titleBar,
+	})
+
+	-- ลากหน้าต่างได้จากแถบหัว
+	local dragging, dragStart, startPos = false, nil, nil
+	connect(titleBar.InputBegan, function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging, dragStart, startPos = true, input.Position, window.Position
+		end
+	end)
+	connect(UserInputService.InputEnded, function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+	connect(UserInputService.InputChanged, function(input)
+		if not dragging then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			local delta = input.Position - dragStart
+			window.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+
+	-- ตัวเลขสรุปด้านบน
+	local statsBar = new("Frame", {
+		Position = UDim2.fromOffset(12, 54),
+		Size = UDim2.new(1, -24, 0, 50),
+		BackgroundTransparency = 1,
+		Parent = window,
+	}, { hlist(8) })
+
+	local function statChip(title: string, layoutOrder: number): TextLabel
+		local chip = new("Frame", {
+			Size = UDim2.new(0.25, -6, 1, 0),
+			BackgroundColor3 = Theme.panel,
+			LayoutOrder = layoutOrder,
+			Parent = statsBar,
+		}, { corner(10) })
+		text({ Text = title, TextSize = 11, TextColor3 = Theme.sub, Size = UDim2.new(1, -16, 0, 16), Position = UDim2.fromOffset(10, 5), Parent = chip })
+		return text({
+			Text = "-",
+			Font = FONT_BOLD,
+			TextSize = 16,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, -16, 0, 22),
+			Position = UDim2.fromOffset(10, 22),
+			Parent = chip,
+		})
+	end
+
+	stats.cash = statChip("💰 เงินตอนนี้", 1)
+	stats.earned = statChip("📈 ได้ในรอบนี้", 2)
+	stats.rate = statChip("⏱ รายได้/นาที (5 นาทีล่าสุด)", 3)
+	stats.uptime = statChip("🕒 เปิดมาแล้ว", 4)
+
+	infoLine = text({
+		Text = "",
+		TextSize = 12,
+		TextColor3 = Theme.sub,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.fromOffset(14, 108),
+		Size = UDim2.new(1, -28, 0, 16),
+		Parent = window,
+	})
+
+	-- แถบแท็บด้านซ้าย + พื้นที่เนื้อหา
+	local sidebar = new("Frame", {
+		Position = UDim2.fromOffset(12, 130),
+		Size = UDim2.new(0, 132, 1, -142),
+		BackgroundColor3 = Theme.panel,
+		Parent = window,
+	}, { corner(10), padding(6), vlist(4) })
+
+	local content = new("Frame", {
+		Position = UDim2.fromOffset(152, 130),
+		Size = UDim2.new(1, -164, 1, -142),
+		BackgroundTransparency = 1,
+		Parent = window,
+	})
+
+	local tabButtons: { [string]: TextButton } = {}
+
+	selectTab = function(id: string)
+		for tabId, page in pages do
+			page.Visible = tabId == id
+		end
+		for tabId, tabButton in tabButtons do
+			local on = tabId == id
+			tween(tabButton, { BackgroundTransparency = if on then 0 else 1 })
+			local caption = tabButton:FindFirstChild("Caption") :: TextLabel?
+			if caption then
+				caption.TextColor3 = if on then Theme.text else Theme.sub
+			end
+		end
+	end
+
+	addTab = function(id: string, icon: string, caption: string, layoutOrder: number): ScrollingFrame
+		local tabButton = new("TextButton", {
+			Name = id,
+			Text = "",
+			AutoButtonColor = false,
+			Size = UDim2.new(1, 0, 0, 34),
+			BackgroundColor3 = Theme.panel2,
+			BackgroundTransparency = 1,
+			LayoutOrder = layoutOrder,
+			Parent = sidebar,
+		}, { corner(8) })
+		text({ Text = icon, TextSize = 15, Size = UDim2.fromOffset(28, 34), Position = UDim2.fromOffset(4, 0), TextXAlignment = Enum.TextXAlignment.Center, Parent = tabButton })
+		text({ Name = "Caption", Text = caption, Font = FONT_BOLD, TextSize = 13, TextColor3 = Theme.sub, Size = UDim2.new(1, -36, 1, 0), Position = UDim2.fromOffset(34, 0), Parent = tabButton })
+		local page = new("ScrollingFrame", {
+			Name = id,
+			Visible = false,
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 4,
+			ScrollBarImageColor3 = Theme.stroke,
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			CanvasSize = UDim2.new(),
+			Parent = content,
+		}, { vlist(8), padding(0, 8, 8, 0) })
+		pages[id] = page
+		tabButtons[id] = tabButton
+		connect(tabButton.Activated, function()
+			selectTab(id)
+		end)
+		return page
+	end
+end
+
+---------------------------------------------------------------------
+-- 7) UI: แถวตั้งค่าแบบต่าง ๆ
+---------------------------------------------------------------------
+local rowOrder = 0
+local function nextOrder(): number
+	rowOrder += 1
+	return rowOrder
+end
+
+local function section(page: Instance, title: string, desc: string?)
+	local frame = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = nextOrder(),
+		Parent = page,
+	}, { vlist(2), padding(8, 0, 0, 2) })
+	text({ Text = title, Font = FONT_BOLD, TextSize = 15, TextColor3 = Theme.accent, Size = UDim2.new(1, 0, 0, 20), LayoutOrder = 1, Parent = frame })
+	if desc then
+		paragraph({ Text = desc, TextSize = 12, TextColor3 = Theme.sub, LayoutOrder = 2, Parent = frame })
+	end
+end
+
+local function card(page: Instance): Frame
+	return new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.panel,
+		LayoutOrder = nextOrder(),
+		Parent = page,
+	}, { corner(10), padding(9, 12, 9, 12) })
+end
+
+local function textColumn(parent: Instance, width: UDim, title: string, desc: string?): (Frame, TextLabel)
+	local column = new("Frame", {
+		Size = UDim2.new(width.Scale, width.Offset, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Parent = parent,
+	}, { vlist(3) })
+	text({ Text = title, Font = FONT_BOLD, TextSize = 14, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = 1, Parent = column })
+	if desc and desc ~= "" then
+		paragraph({ Text = desc, TextSize = 12, TextColor3 = Theme.sub, LayoutOrder = 2, Parent = column })
+	end
+	local status = paragraph({ Text = "", TextSize = 12, TextColor3 = Theme.accent, LayoutOrder = 3, Visible = false, Parent = column })
+	return column, status
+end
+
+local function makeSwitch(parent: Instance, value: boolean, onChange: (boolean) -> ())
+	local track = new("TextButton", {
+		Text = "",
+		AutoButtonColor = false,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromOffset(42, 22),
+		BackgroundColor3 = if value then Theme.good else Theme.off,
+		Parent = parent,
+	}, { corner(11) })
+	local knob = new("Frame", {
+		Size = UDim2.fromOffset(18, 18),
+		Position = if value then UDim2.fromOffset(22, 2) else UDim2.fromOffset(2, 2),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Parent = track,
+	}, { corner(9) })
+	local api = { value = value }
+	function api.set(newValue: boolean, silent: boolean?)
+		api.value = newValue
+		tween(track, { BackgroundColor3 = if newValue then Theme.good else Theme.off })
+		tween(knob, { Position = if newValue then UDim2.fromOffset(22, 2) else UDim2.fromOffset(2, 2) })
+		if not silent then
+			onChange(newValue)
+		end
+	end
+	connect(track.Activated, function()
+		api.set(not api.value)
+	end)
+	return api
+end
+
+local function toggleRow(page: Instance, key: string, title: string, desc: string?, onChange: ((boolean) -> ())?): Row
+	local holder = card(page)
+	local _, status = textColumn(holder, UDim.new(1, -54), title, desc)
+	local switch = makeSwitch(holder, config[key] == true, function(value)
+		config[key] = value
+		saveConfig()
+		if not value then
+			status.Visible = false
+		end
+		if onChange then
+			onChange(value)
+		end
+	end)
+	local row = {}
+	function row.setStatus(message: string?, color: Color3?)
+		status.Text = message or ""
+		status.TextColor3 = color or Theme.accent
+		status.Visible = message ~= nil and message ~= ""
+	end
+	function row.set(value: boolean)
+		switch.set(value)
+	end
+	return row :: any
+end
+
+-- toggle ที่ไม่ได้ผูกกับ config (เช่น Spectate)
+local function plainToggle(page: Instance, title: string, desc: string?, onChange: (boolean) -> ())
+	local holder = card(page)
+	textColumn(holder, UDim.new(1, -54), title, desc)
+	return makeSwitch(holder, false, onChange)
+end
+
+local function choiceRow(page: Instance, key: string, title: string, desc: string?, options: { { value: string, label: string } })
+	local holder = card(page)
+	local column = textColumn(holder, UDim.new(1, 0), title, desc)
+	local bar = new("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, LayoutOrder = 4, Parent = column }, { hlist(6) })
+	local buttons = {}
+	local function paint()
+		for value, choiceButton in buttons do
+			local on = config[key] == value
+			choiceButton.BackgroundColor3 = if on then Theme.accent else Theme.panel2
+			choiceButton.TextColor3 = if on then Theme.bg else Theme.text
+		end
+	end
+	local count = #options
+	for index, option in options do
+		local choiceButton = button({
+			Text = option.label,
+			Size = UDim2.new(1 / count, -6 * (count - 1) / count, 1, 0),
+			LayoutOrder = index,
+			Parent = bar,
+		})
+		buttons[option.value] = choiceButton
+		connect(choiceButton.Activated, function()
+			config[key] = option.value
+			saveConfig()
+			paint()
+		end)
+	end
+	paint()
+end
+
+local function stepperRow(page: Instance, key: string, title: string, desc: string?, minValue: number, maxValue: number, step: number, format: (number) -> string)
+	local holder = card(page)
+	textColumn(holder, UDim.new(1, -138), title, desc)
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromOffset(128, 28),
+		BackgroundColor3 = Theme.panel2,
+		Parent = holder,
+	}, { corner(8) })
+	local minus = button({ Text = "−", TextSize = 16, Size = UDim2.fromOffset(28, 28), BackgroundColor3 = Theme.off, Parent = box })
+	local plus = button({ Text = "+", TextSize = 16, Position = UDim2.new(1, -28, 0, 0), Size = UDim2.fromOffset(28, 28), BackgroundColor3 = Theme.off, Parent = box })
+	local valueLabel = text({ Text = "", Font = FONT_BOLD, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(28, 0), Size = UDim2.new(1, -56, 1, 0), Parent = box })
+	local function paint()
+		valueLabel.Text = format(config[key])
+	end
+	local function change(delta: number)
+		local value = math.clamp(config[key] + delta, minValue, maxValue)
+		config[key] = math.floor(value / step + 0.5) * step
+		saveConfig()
+		paint()
+	end
+	connect(minus.Activated, function()
+		change(-step)
+	end)
+	connect(plus.Activated, function()
+		change(step)
+	end)
+	paint()
+end
+
+local function cycleRow(page: Instance, key: string, title: string, desc: string?, values: { string }, colorOf: ((string) -> Color3)?)
+	local holder = card(page)
+	textColumn(holder, UDim.new(1, -168), title, desc)
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromOffset(158, 28),
+		BackgroundColor3 = Theme.panel2,
+		Parent = holder,
+	}, { corner(8) })
+	local left = button({ Text = "<", TextSize = 15, Size = UDim2.fromOffset(28, 28), BackgroundColor3 = Theme.off, Parent = box })
+	local right = button({ Text = ">", TextSize = 15, Position = UDim2.new(1, -28, 0, 0), Size = UDim2.fromOffset(28, 28), BackgroundColor3 = Theme.off, Parent = box })
+	local valueLabel = text({ Text = "", Font = FONT_BOLD, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(28, 0), Size = UDim2.new(1, -56, 1, 0), Parent = box })
+	local function paint()
+		valueLabel.Text = tostring(config[key])
+		valueLabel.TextColor3 = if colorOf then colorOf(config[key]) else Theme.text
+	end
+	local function shift(delta: number)
+		local index = table.find(values, config[key]) or 1
+		index = (index - 1 + delta) % #values + 1
+		config[key] = values[index]
+		saveConfig()
+		paint()
+	end
+	connect(left.Activated, function()
+		shift(-1)
+	end)
+	connect(right.Activated, function()
+		shift(1)
+	end)
+	paint()
+end
+
+local function buttonRow(page: Instance, defs: { { label: string, color: Color3?, callback: () -> () } })
+	local bar = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 32),
+		BackgroundTransparency = 1,
+		LayoutOrder = nextOrder(),
+		Parent = page,
+	}, { hlist(6) })
+	local count = #defs
+	for index, def in defs do
+		local rowButton = button({
+			Text = def.label,
+			Size = UDim2.new(1 / count, -6 * (count - 1) / count, 1, 0),
+			BackgroundColor3 = def.color or Theme.panel2,
+			LayoutOrder = index,
+			Parent = bar,
+		})
+		connect(rowButton.Activated, function()
+			task.spawn(function()
+				local ok, err = pcall(def.callback)
+				if not ok then
+					warn("[BackSoyer] " .. tostring(err))
+				end
+			end)
+		end)
+	end
+end
+
+local function liveCard(page: Instance): TextLabel
+	local holder = card(page)
+	return paragraph({ Text = "...", TextSize = 13, RichText = true, Parent = holder })
+end
+
+---------------------------------------------------------------------
+-- 8) Log + การแจ้งเตือน
+---------------------------------------------------------------------
+local logPage: ScrollingFrame? = nil
+local logCount = 0
+local LOG_COLORS = { info = Theme.text, good = Theme.good, warn = Theme.accent, bad = Theme.bad, buy = Theme.info }
+
+local function log(kind: string, message: string)
+	logCount += 1
+	local page = logPage
+	if not page then
+		return
+	end
+	paragraph({
+		Text = os.date("%H:%M:%S") .. "   " .. message,
+		TextSize = 12,
+		TextColor3 = LOG_COLORS[kind] or Theme.text,
+		LayoutOrder = -logCount,
+		Parent = page,
+	})
+	if logCount % 25 == 0 then
+		local lines = {}
+		for _, child in page:GetChildren() do
+			if child:IsA("TextLabel") then
+				table.insert(lines, child)
+			end
+		end
+		if #lines > 200 then
+			table.sort(lines, function(a, b)
+				return a.LayoutOrder < b.LayoutOrder
+			end)
+			for index = 201, #lines do
+				lines[index]:Destroy()
+			end
+		end
+	end
+end
+
+local toastHolder = new("Frame", {
+	AnchorPoint = Vector2.new(1, 1),
+	Position = UDim2.new(1, -16, 1, -120),
+	Size = UDim2.fromOffset(290, 320),
+	BackgroundTransparency = 1,
+	Parent = gui,
+}, {
+	new("UIListLayout", {
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Bottom,
+	}),
+})
+local toastCount = 0
+local function toast(message: string, color: Color3?)
+	if not config.toasts then
+		return
+	end
+	toastCount += 1
+	local frame = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.panel,
+		LayoutOrder = toastCount,
+		Parent = toastHolder,
+	}, { corner(10), padding(9, 12, 9, 12), stroke(color or Theme.accent, 1.5) })
+	paragraph({ Text = message, TextSize = 13, Parent = frame })
+	local frames = {}
+	for _, child in toastHolder:GetChildren() do
+		if child:IsA("Frame") then
+			table.insert(frames, child)
+		end
+	end
+	if #frames > 4 then
+		table.sort(frames, function(a, b)
+			return a.LayoutOrder < b.LayoutOrder
+		end)
+		frames[1]:Destroy()
+	end
+	task.delay(5, function()
+		if frame.Parent then
+			frame:Destroy()
+		end
+	end)
+end
+
+local function setActivity(message: string?)
+	activityLabel.Text = message or (if paused then "⏸ หยุดชั่วคราวอยู่" else "รอรอบถัดไป...")
+end
+
+---------------------------------------------------------------------
+-- 9) สถิติของรอบนี้
+---------------------------------------------------------------------
+local session = { start = os.clock(), earned = 0, spent = 0, lastCash = cash(), samples = {} }
+local counters = {
+	take = 0,
+	smelt = 0,
+	collect = 0,
+	sell = 0,
+	sellCrates = 0,
+	upgrades = 0,
+	miners = 0,
+	rolls = 0,
+	hatched = 0,
+	eggsBought = 0,
+	quests = 0,
+	spins = 0,
+	potions = 0,
+	indexNew = 0,
+}
+
+connect(localPlayer:GetAttributeChangedSignal("Cash"), function()
+	local now = cash()
+	local delta = now - session.lastCash
+	if delta > 0 then
+		session.earned += delta
+	elseif delta < 0 then
+		session.spent -= delta
+	end
+	session.lastCash = now
+end)
+
+task.spawn(function()
+	while running do
+		table.insert(session.samples, { os.clock(), session.earned })
+		while #session.samples > 31 do
+			table.remove(session.samples, 1)
+		end
+		task.wait(10)
+	end
+end)
+
+-- รายได้ต่อนาที เฉลี่ยจาก 5 นาทีล่าสุด
+local function ratePerMinute(): number
+	local samples = session.samples
+	if #samples < 2 then
+		local elapsed = os.clock() - session.start
+		return if elapsed > 5 then session.earned / elapsed * 60 else 0
+	end
+	local first = samples[1]
+	local elapsed = os.clock() - first[1]
+	return if elapsed > 0 then (session.earned - first[2]) / elapsed * 60 else 0
+end
+
+---------------------------------------------------------------------
+-- 10) การวาป (ทีละระบบ กันวาปชนกัน) + กดปุ่ม E
+---------------------------------------------------------------------
+-- เงินที่กันไว้ให้ระบบอื่น (เช่น รอซื้อ miner ที่ยังไม่มีใน Index) ระบบอัพเกรดจะไม่แตะส่วนนี้
+local moneyHold = { amount = 0, label = "", expires = 0 }
+local function heldCash(): number
+	return if moneyHold.expires > os.clock() then moneyHold.amount else 0
+end
+
+local hopBusy = false
+
+local function moveTo(target: CFrame)
+	local root = getRoot()
+	if not root then
+		return
+	end
+	local humanoid = getHumanoid()
+	if humanoid and humanoid.Sit then
+		humanoid.Sit = false
+		task.wait()
+	end
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	root.Parent:PivotTo(target)
+end
+
+-- ทำงานที่ต้องวาป: กล้องค้างไว้ที่เดิม เสร็จแล้ววาปกลับ (แม้ error ระหว่างทาง)
+local function withHops(activity: string, fn: ((CFrame?) -> boolean) -> ()): boolean
+	local waited = os.clock()
+	while hopBusy and running do
+		task.wait(0.05)
+		if os.clock() - waited > 30 then
+			return false
+		end
+	end
+	hopBusy = true
+	setActivity(activity)
+	local camera = workspace.CurrentCamera
+	local origin: CFrame? = nil
+	local oldCameraType: Enum.CameraType? = nil
+
+	local function hopTo(target: CFrame?): boolean
+		if not (target and config.quickTp) then
+			return false
+		end
+		local root = getRoot()
+		if not root then
+			return false
+		end
+		if not origin then
+			origin = root.CFrame
+			if camera then
+				oldCameraType = camera.CameraType
+				camera.CameraType = Enum.CameraType.Scriptable
+			end
+		end
+		moveTo(target)
+		task.wait(config.hopWait)
+		return true
+	end
+
+	local ok, err = pcall(fn, hopTo)
+	if origin then
+		if config.returnHome then
+			moveTo(origin)
+		end
+		if camera and oldCameraType then
+			camera.CameraType = oldCameraType
+		end
+	end
+	hopBusy = false
+	setActivity(nil)
+	if not ok then
+		error(err, 0)
+	end
+	return true
+end
+
+local function firePrompt(prompt: ProximityPrompt): boolean
+	pcall(function()
+		prompt.MaxActivationDistance = math.huge
+		prompt.RequiresLineOfSight = false
+	end)
+	if typeof(fireproximityprompt) == "function" then
+		if pcall(fireproximityprompt, prompt) then
+			return true
+		end
+	end
+	return pcall(function()
+		prompt:InputHoldBegin()
+		task.wait((prompt.HoldDuration or 0) + 0.05)
+		prompt:InputHoldEnd()
+	end)
+end
+
+local function fireClick(detector: ClickDetector): boolean
+	if typeof(fireclickdetector) == "function" then
+		return pcall(fireclickdetector, detector)
+	end
+	return false
+end
+
+local allPrompts: { [ProximityPrompt]: boolean } = {}
+for _, descendant in workspace:GetDescendants() do
+	if descendant:IsA("ProximityPrompt") then
+		allPrompts[descendant] = true
+	end
+end
+connect(workspace.DescendantAdded, function(descendant)
+	if descendant:IsA("ProximityPrompt") then
+		allPrompts[descendant] = true
+	end
+end)
+connect(workspace.DescendantRemoving, function(descendant)
+	allPrompts[descendant] = nil
+end)
+
+local function promptMatches(prompt: ProximityPrompt, action: string?, object: string?): boolean
+	return (action == nil or prompt.ActionText:lower():find(action, 1, true) ~= nil)
+		and (object == nil or prompt.ObjectText:lower():find(object, 1, true) ~= nil)
+end
+
+local function findPromptIn(container: Instance?, action: string?, object: string?): ProximityPrompt?
+	if not container then
+		return nil
+	end
+	for _, descendant in container:GetDescendants() do
+		if descendant:IsA("ProximityPrompt") and promptMatches(descendant, action, object) then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function nearestPrompt(action: string?, object: string?, origin: Vector3): ProximityPrompt?
+	local best, bestDistance = nil, math.huge
+	for prompt in allPrompts do
+		if prompt.Parent and promptMatches(prompt, action, object) then
+			local pos = posOf(prompt.Parent)
+			if pos then
+				local distance = (pos - origin).Magnitude
+				if distance < bestDistance then
+					best, bestDistance = prompt, distance
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- วาปไปใกล้ปุ่ม (ถ้ายังไม่ใกล้) แล้วกด
+local function usePrompt(prompt: ProximityPrompt?, hopTo: (CFrame?) -> boolean): boolean
+	if not (prompt and prompt.Parent) then
+		return false
+	end
+	local pos = posOf(prompt.Parent)
+	if pos and not nearPos(pos, 7) then
+		hopTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+	end
+	return firePrompt(prompt)
+end
+
+-- จุดยืนหน้าจอของป้าย/แท่น: ออกมาจากด้านที่ SurfaceGui แสดงอยู่ distance stud แล้วหาพื้นด้านล่าง
+local function standAt(part: BasePart, face: Enum.NormalId, ignore: Instance?, distance: number): CFrame
+	local normal = Vector3.FromNormalId(face)
+	local worldNormal = part.CFrame:VectorToWorldSpace(normal)
+	local flat = Vector3.new(worldNormal.X, 0, worldNormal.Z)
+	flat = if flat.Magnitude > 0.05 then flat.Unit else Vector3.new(0, 0, -1)
+	local front = part.Position + flat * (math.abs(normal:Dot(part.Size)) / 2 + distance)
+	local ignoreList: { Instance } = { ignore or part }
+	if localPlayer.Character then
+		table.insert(ignoreList, localPlayer.Character)
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignoreList
+	pcall(function()
+		params.RespectCanCollide = true
+	end)
+	local hit = workspace:Raycast(front + Vector3.new(0, 2, 0), Vector3.new(0, -60, 0), params)
+	local y = if hit then hit.Position.Y + 3 else part.Position.Y - part.Size.Y / 2 + 3
+	local pos = Vector3.new(front.X, y, front.Z)
+	return CFrame.lookAt(pos, Vector3.new(part.Position.X, y, part.Position.Z))
+end
+
+-- ข้อความที่เกมเด้งบอก (BagNotice เช่น กระเป๋าเต็ม) + ข้อมูลกระเป๋า miner ที่เซิร์ฟเวอร์ส่งมา (BagSync)
+local gameNotice = { text = "", at = 0 }
+local bag: { cap: number?, count: number?, list: { any }?, at: number } = { cap = nil, count = nil, list = nil, at = 0 }
+do
+	local syncRemote = remoteFolder and remoteFolder:FindFirstChild("BagSync")
+	if syncRemote and syncRemote:IsA("RemoteEvent") then
+		connect(syncRemote.OnClientEvent, function(data)
+			if type(data) ~= "table" then
+				return
+			end
+			bag.list = if type(data.list) == "table" then data.list else bag.list
+			bag.cap = tonumber(data.cap) or bag.cap
+			bag.count = tonumber(data.count) or (if bag.list then #bag.list else bag.count)
+			bag.at = os.clock()
+		end)
+	end
+	local noticeRemote = remoteFolder and remoteFolder:FindFirstChild("BagNotice")
+	if noticeRemote and noticeRemote:IsA("RemoteEvent") then
+		connect(noticeRemote.OnClientEvent, function(message)
+			if type(message) ~= "string" or message == "" then
+				return
+			end
+			-- ข้อความเดิมซ้ำ ๆ ลง log ครั้งเดียว
+			local repeated = message == gameNotice.text and os.clock() - gameNotice.at < 300
+			gameNotice.text, gameNotice.at = message, os.clock()
+			if not repeated then
+				log("warn", "เกมแจ้ง: " .. message)
+			end
+		end)
+	end
+end
+
+-- ข้อความจากเกมที่เด้งมาหลังเวลา since (ใช้บอกเหตุผลตอนทำอะไรไม่สำเร็จ)
+local function noticeSince(since: number): string?
+	return if gameNotice.at >= since and gameNotice.text ~= "" then gameNotice.text else nil
+end
+
+local function bagFull(): boolean
+	local count, cap = bag.count, bag.cap
+	return count ~= nil and cap ~= nil and count >= cap
+end
+
+---------------------------------------------------------------------
+-- 11) แท็บ + ตัววนลูปของแต่ละระบบ
+---------------------------------------------------------------------
+addTab("Farm", "🏭", "Farm", 1)
+addTab("Upgrades", "⬆", "Upgrades", 2)
+addTab("Roll", "🎲", "Roll", 3)
+addTab("Index", "📖", "Index", 4)
+addTab("Pets", "🐾", "Pets", 5)
+addTab("Rewards", "🎁", "Rewards", 6)
+addTab("Misc", "⚙", "Misc", 7)
+logPage = addTab("Log", "📜", "Log", 8)
+
+-- ข้อมูลบนการ์ดของแต่ละแท็บ (อัปเดตเฉพาะแท็บที่เปิดอยู่)
+local refreshers: { [string]: () -> () } = {}
+-- งานที่ต้องทำตอนปิดสคริปต์
+local cleanupHooks: { () -> () } = {}
+
+-- ลูปของแต่ละระบบ: ทำงานเมื่อเปิดอยู่ error แล้วไม่หยุด และไม่ log error ซ้ำ ๆ
+local function startLoop(name: string, key: string?, interval: number, row: Row?, step: () -> ())
+	task.spawn(function()
+		local lastError = nil
+		while running do
+			if not paused and (key == nil or config[key]) then
+				local ok, err = pcall(step)
+				if not ok then
+					local message = tostring(err)
+					if row then
+						row.setStatus("⚠ " .. message, Theme.bad)
+					end
+					if message ~= lastError then
+						log("bad", name .. ": " .. message)
+						lastError = message
+					end
+				else
+					lastError = nil
+				end
+			end
+			task.wait(interval)
+		end
+	end)
+end
+
+---------------------------------------------------------------------
+-- 12) FARM: Stock → หลอม → เก็บกล่องหลอมเสร็จ → ขาย
+---------------------------------------------------------------------
+do
+	local farmPage = pages.Farm
+
+	-- ของที่ถืออยู่: กล่องแร่ดิบ / กล่องที่หลอมแล้ว / มูลค่า
+	local function carryInfo(): (number, number, number, number)
+		local list = decode(pAttr("Carry"))
+		local raw, smelted = 0, 0
+		for _, crate in list do
+			if type(crate) == "table" and crate.ore == SMELTED then
+				smelted += 1
+			else
+				raw += 1
+			end
+		end
+		local value = 0
+		if Economy and Economy.carryValue then
+			local ok, result = pcall(Economy.carryValue, list)
+			if ok and type(result) == "number" then
+				value = result * num(pAttr("OreMult"), 1)
+			end
+		end
+		return raw, smelted, value, #list
+	end
+
+	-- แร่ที่รออยู่ใน Stock (attribute "Stock" ของ Stock_<plot>)
+	local function stockAmount(model: Instance?): number?
+		if not model then
+			return nil
+		end
+		local total = 0
+		for _, value in decode(model:GetAttribute("Stock")) do
+			total += if type(value) == "number" then value else 1
+		end
+		return total
+	end
+
+	-- กล่องที่หลอมเสร็จรอเก็บ (attribute "Out" ของ Smeltery_<plot>)
+	local function smeltOut(model: Instance?): number?
+		if not model then
+			return nil
+		end
+		return #decode(model:GetAttribute("Out"))
+	end
+
+	local function farmPrompts()
+		local stockModel, smeltModel = myBuilding("Stock"), myBuilding("Smeltery")
+		local root = getRoot()
+		local center = posOf(stockModel) or (root and root.Position) or Vector3.zero
+		return {
+			take = findPromptIn(stockModel, "take", nil) or nearestPrompt("take all", "stock", center),
+			smelt = findPromptIn(smeltModel, "smelt", "smeltery")
+				or findPromptIn(smeltModel, "smelt", nil)
+				or nearestPrompt("smelt", "smeltery", center),
+			collect = findPromptIn(smeltModel, "take", "smelted") or nearestPrompt("take all", "smelted", center),
+		}
+	end
+
+	-- แท่นขาย: 1) ตำแหน่งที่จำไว้ 2) part ชื่อ pad ในร้าน 3) เดาจากจุดยืนคนขาย
+	local function sellPadCFrame(): CFrame?
+		local shop = myBuilding("Shop")
+		if shop and config.sellPadRel then
+			local rel = config.sellPadRel
+			return CFrame.new((shop :: any):GetPivot():PointToWorldSpace(Vector3.new(rel[1], rel[2], rel[3])))
+		end
+		if not shop then
+			return nil
+		end
+		for _, descendant in shop:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				local name = descendant.Name:lower()
+				if name:find("pad", 1, true) or name:find("sellzone", 1, true) or name:find("sellarea", 1, true) then
+					return CFrame.new(descendant.Position + Vector3.new(0, descendant.Size.Y / 2 + 3, 0))
+				end
+			end
+		end
+		local spot = shop:FindFirstChild("ShopkeeperSpot", true)
+		if spot and spot:IsA("BasePart") then
+			local look = (shop :: any):GetPivot().LookVector
+			local flat = Vector3.new(look.X, 0, look.Z)
+			flat = if flat.Magnitude > 0.01 then flat.Unit else Vector3.new(0, 0, -1)
+			return CFrame.new(spot.Position + flat * 7 + Vector3.new(0, 3, 0))
+		end
+		return nil
+	end
+
+	-- จำตำแหน่งแท่นขายตอนเราเหยียบ (เก็บแบบเทียบกับร้าน ใช้ได้แม้ย้ายแปลง)
+	connect(localPlayer:GetAttributeChangedSignal("OnSellPad"), function()
+		local root, shop = getRoot(), myBuilding("Shop")
+		if pAttr("OnSellPad") == true and root and shop then
+			local rel = (shop :: any):GetPivot():PointToObjectSpace(root.Position)
+			local first = config.sellPadRel == nil
+			config.sellPadRel = { rel.X, rel.Y, rel.Z }
+			saveConfig()
+			if first then
+				log("good", "จำตำแหน่งแท่นขายแล้ว")
+			end
+		end
+	end)
+
+	section(farmPage, "ฟาร์มแร่อัตโนมัติ", "ยืนตรงไหนก็ได้ สคริปต์จะวาปไปกดปุ่มแป๊บเดียวแล้ววาปกลับ (กล้องค้างไว้ที่เดิม)")
+	local farmOverview = liveCard(farmPage)
+	local stockRow = toggleRow(
+		farmPage,
+		"autoStock",
+		"Auto Farm",
+		"เก็บ Stock → ใส่เตาหลอม → เก็บกล่องที่หลอมเสร็จ → ขายที่แท่นขาย ทำเฉพาะขั้นที่มีของ ไม่วาปเปล่า"
+	)
+	choiceRow(
+		farmPage,
+		"sellMode",
+		"โหมดขาย",
+		string.format(
+			"Safe = x%.2f แน่นอน · Gamble = สุ่ม x0.75–x4 เฉลี่ย x%.2f (ดีกว่า Safe ~%d%% ในระยะยาว แต่ 60%% ของครั้งจะได้ต่ำกว่า x1)",
+			SAFE_MULT,
+			GAMBLE_EV,
+			math.floor((GAMBLE_EV / SAFE_MULT - 1) * 100 + 0.5)
+		),
+		{ { value = "safe", label = string.format("Safe x%.2f", SAFE_MULT) }, { value = "gamble", label = string.format("Gamble ~x%.2f", GAMBLE_EV) } }
+	)
+	stepperRow(farmPage, "sellEvery", "ขายทุก ๆ", "รอสะสมกล่องที่หลอมแล้วก่อนไปขาย (วาปน้อยลง)", 1, 120, 1, function(value)
+		return value .. " วินาที"
+	end)
+	local awayRow = toggleRow(farmPage, "claimAway", "รับเงินตอนออฟไลน์", "กดรับ Away Cash ให้เองเมื่อมี")
+
+	section(farmPage, "การวาป")
+	toggleRow(
+		farmPage,
+		"quickTp",
+		"วาปไปกดแป๊บเดียว",
+		"เกมเช็คระยะที่เซิร์ฟเวอร์ (Stock / เตา / แท่นขาย / ป้ายอัพเกรด / แท่นสุ่ม) ถ้าปิด ต้องไปยืนใกล้เอง ระบบอัพเกรดกับสุ่มจะซื้อไม่ได้"
+	)
+	toggleRow(farmPage, "returnHome", "วาปกลับจุดเดิมทุกครั้ง", "ถ้าปิด ตัวละครจะค้างอยู่ที่จุดทำงานล่าสุด (กระตุกน้อยลงตอน AFK)")
+	stepperRow(farmPage, "hopWait", "รอหลังวาป", "รอให้เซิร์ฟเวอร์เห็นตำแหน่งใหม่ก่อนกด ถ้ากดไม่ค่อยติดให้เพิ่ม", 0.1, 1.5, 0.05, function(value)
+		return string.format("%.2f วิ", value)
+	end)
+	buttonRow(farmPage, {
+		{
+			label = "ลืมตำแหน่งแท่นขาย",
+			callback = function()
+				config.sellPadRel = nil
+				saveConfig()
+				log("warn", "ลบตำแหน่งแท่นขายแล้ว เดินไปเหยียบใหม่ 1 ครั้ง")
+			end,
+		},
+		{
+			label = "ทดสอบวาปไปแท่นขาย",
+			callback = function()
+				local pad = sellPadCFrame()
+				if not pad then
+					log("bad", "หาแท่นขายไม่เจอ เดินไปเหยียบแท่นขายเอง 1 ครั้ง")
+					return
+				end
+				withHops("ทดสอบ: แท่นขาย", function(hopTo)
+					hopTo(pad)
+					local onPad = waitFor(function()
+						return pAttr("OnSellPad") == true
+					end, 1.5)
+					log(if onPad then "good" else "bad", if onPad then "ยืนบนแท่นขายได้" else "ยังไม่ติดแท่นขาย ลองเดินไปเหยียบเองแล้วกดใหม่")
+					task.wait(0.5)
+				end)
+			end,
+		},
+	})
+
+	local lastSell = 0
+	local failStreak = { take = 0, sell = 0 }
+
+	local function doSell(hopTo: (CFrame?) -> boolean): string?
+		if pAttr("OnSellPad") ~= true then
+			local pad = sellPadCFrame()
+			if not pad then
+				return "หาแท่นขายไม่เจอ: เดินไปเหยียบแท่นขาย 1 ครั้ง"
+			end
+			hopTo(pad)
+			waitFor(function()
+				return pAttr("OnSellPad") == true
+			end, 1.5)
+		end
+		if pAttr("OnSellPad") ~= true then
+			failStreak.sell += 1
+			if failStreak.sell >= 3 then
+				cool("sell", 30)
+			end
+			return "ยืนบนแท่นขายไม่ติด (เดินไปเหยียบเอง 1 ครั้งให้สคริปต์จำ)"
+		end
+		failStreak.sell = 0
+		local _, smelted, value = carryInfo()
+		fire("SellSmelted", config.sellMode)
+		lastSell = os.clock()
+		local sold = waitFor(function()
+			local _, left = carryInfo()
+			return left < smelted
+		end, 1.5)
+		if sold then
+			counters.sell += 1
+			counters.sellCrates += smelted
+			local mult = if config.sellMode == "safe" then SAFE_MULT else GAMBLE_EV
+			log("good", string.format("ขาย %d กล่อง (%s) ประมาณ %s", smelted, config.sellMode, fmtCash(value * mult)))
+			return nil
+		end
+		return "ส่งคำสั่งขายแล้วแต่ของยังไม่ลด"
+	end
+
+	local function farmCycle()
+		if not alive() then
+			stockRow.setStatus("รอตัวละครเกิด...")
+			return
+		end
+		local smeltModel = myBuilding("Smeltery")
+		local prompts = farmPrompts()
+		local stockNow = stockAmount(myBuilding("Stock"))
+		local outNow = smeltOut(smeltModel)
+		local raw, smelted = carryInfo()
+
+		local wantTake = prompts.take ~= nil and (stockNow == nil or stockNow > 0) and not cooling("take")
+		local wantSmelt = prompts.smelt ~= nil and (raw > 0 or wantTake)
+		local wantCollect = prompts.collect ~= nil and (outNow == nil or outNow > 0) and not cooling("collect")
+		local sellDue = os.clock() - lastSell >= config.sellEvery
+		local wantSell = sellDue and (smelted > 0 or wantCollect) and not cooling("sell")
+
+		if not (wantTake or wantSmelt or wantCollect or wantSell) then
+			stockRow.setStatus("ว่าง: ยังไม่มีของให้ทำ · " .. os.date("%H:%M:%S"), Theme.sub)
+			return
+		end
+
+		local steps = {}
+		local problem = nil
+		withHops("Farm: กำลังทำรอบฟาร์ม", function(hopTo)
+			if wantTake then
+				local _, _, _, before = carryInfo()
+				usePrompt(prompts.take, hopTo)
+				local ok = waitFor(function()
+					local _, _, _, after = carryInfo()
+					return after > before
+				end, 1)
+				if ok then
+					counters.take += 1
+					failStreak.take = 0
+					table.insert(steps, "เก็บ ✓")
+				else
+					failStreak.take += 1
+					if failStreak.take >= 3 then
+						cool("take", 10)
+						problem = "กด Take All ไม่ติดหลายครั้ง (Stock อาจยังไม่ครบกล่อง หรือเพิ่ม 'รอหลังวาป')"
+					end
+				end
+			end
+
+			local rawNow = carryInfo()
+			if rawNow > 0 and prompts.smelt then
+				usePrompt(prompts.smelt, hopTo)
+				if waitFor(function()
+					return (carryInfo()) < rawNow
+				end, 1) then
+					counters.smelt += 1
+					table.insert(steps, "หลอม ✓")
+				end
+			end
+
+			if prompts.collect and (smeltOut(smeltModel) or 1) > 0 and not cooling("collect") then
+				local _, before = carryInfo()
+				usePrompt(prompts.collect, hopTo)
+				if waitFor(function()
+					local _, after = carryInfo()
+					return after > before
+				end, 1) then
+					counters.collect += 1
+					table.insert(steps, "เก็บของหลอม ✓")
+				elseif smeltOut(smeltModel) == nil then
+					cool("collect", 8)
+				end
+			end
+
+			local _, smeltedNow = carryInfo()
+			if smeltedNow > 0 and os.clock() - lastSell >= config.sellEvery and not cooling("sell") then
+				local err = doSell(hopTo)
+				if err then
+					problem = err
+				else
+					table.insert(steps, "ขาย ✓")
+				end
+			end
+		end)
+
+		if problem then
+			stockRow.setStatus("⚠ " .. problem, Theme.bad)
+		else
+			local summary = if #steps > 0 then table.concat(steps, " · ") else "ไม่มีอะไรเปลี่ยน"
+			stockRow.setStatus(summary .. "  ·  " .. os.date("%H:%M:%S"))
+		end
+	end
+	startLoop("Auto Farm", "autoStock", 1, stockRow, farmCycle)
+
+	startLoop("Away Cash", "claimAway", 10, awayRow, function()
+		local away = num(pAttr("AwayCash"))
+		if away > 0 then
+			fire("AwayClaim", "claim")
+			log("good", "รับเงินตอนออฟไลน์ " .. fmtCash(away))
+			awayRow.setStatus("รับล่าสุด " .. fmtCash(away) .. " · " .. os.date("%H:%M:%S"), Theme.good)
+		end
+	end)
+
+	refreshers.Farm = function()
+		local smeltModel = myBuilding("Smeltery")
+		local stock = stockAmount(myBuilding("Stock"))
+		local out = smeltOut(smeltModel)
+		local raw, smelted, value = carryInfo()
+		local queue = if smeltModel then num(smeltModel:GetAttribute("Queue")) else nil
+		local busy = smeltModel ~= nil and smeltModel:GetAttribute("Busy") == true
+		local padText = if pAttr("OnSellPad") == true
+			then "<font color=\"#52D074\">ยืนอยู่บนแท่น</font>"
+			elseif config.sellPadRel then "จำตำแหน่งไว้แล้ว"
+			else "<font color=\"#FFBA38\">ยังไม่รู้ตำแหน่ง (เดินไปเหยียบ 1 ครั้ง)</font>"
+		farmOverview.Text = string.format(
+			"📦 <b>Stock</b>: %s     🔥 <b>เตาหลอม</b>: %s · คิว %s · พร้อมเก็บ %s/%d\n🧺 <b>ถืออยู่</b>: ดิบ %d · หลอมแล้ว %d (≈ %s)     🛒 <b>แท่นขาย</b>: %s\n📊 รอบนี้: เก็บ %d · หลอม %d · เก็บของหลอม %d · ขาย %d ครั้ง (%d กล่อง)",
+			if stock == nil then "ไม่พบ" elseif stock > 0 then "มีของ (" .. math.floor(stock) .. ")" else "ว่าง",
+			if smeltModel == nil then "ไม่พบ" elseif busy then "กำลังหลอม" else "ว่าง",
+			if queue then tostring(queue) else "-",
+			if out then tostring(out) else "-",
+			SMELT_OUT_CAP,
+			raw,
+			smelted,
+			fmtCash(value),
+			padText,
+			counters.take,
+			counters.smelt,
+			counters.collect,
+			counters.sell,
+			counters.sellCrates
+		)
+	end
+end
+
+---------------------------------------------------------------------
+-- 13) UPGRADES: รวมทุกอย่างที่ซื้อได้ แล้ววาปไปซื้อที่ป้าย (เกมให้อัพเฉพาะตอนยืนที่ป้าย)
+---------------------------------------------------------------------
+do
+	local upgradePage = pages.Upgrades
+
+	section(
+		upgradePage,
+		"อัพเกรดอัตโนมัติ",
+		"เกมให้อัพได้เฉพาะตอนยืนที่ป้าย สคริปต์จะวาปไปหน้าป้ายแป๊บเดียว ซื้อทุกอย่างที่ซื้อได้ (ไปต่อป้ายอื่นในรอบเดียวกัน) แล้ววาปกลับ"
+	)
+	local boardCard = liveCard(upgradePage)
+	local upgradeRow = toggleRow(upgradePage, "autoUpgrade", "Auto Upgrade", "เปิดตัวนี้แล้วเลือกด้านล่างว่าจะให้ซื้ออะไรบ้าง")
+	choiceRow(
+		upgradePage,
+		"upgradeMode",
+		"วิธีเลือกซื้อ",
+		"เก็บเงินขยายก่อน = ถ้าขยายเหมือง/Quarry/ประตู/Pedestal ใกล้ซื้อได้ (ราคาไม่เกิน 4 เท่าของเงิน) จะหยุดซื้ออย่างอื่นเพื่อเก็บเงิน · ถูกสุดก่อน = ซื้ออะไรก็ได้ที่ถูกที่สุด",
+		{ { value = "progress", label = "เก็บเงินขยายก่อน" }, { value = "cheapest", label = "ถูกสุดก่อน" } }
+	)
+	stepperRow(upgradePage, "reservePct", "กันเงินไว้", "ไม่ใช้เงินส่วนนี้ซื้ออัพเกรด", 0, 90, 5, function(value)
+		return value .. "%"
+	end)
+	stepperRow(upgradePage, "upgradeEvery", "วาปไปซื้อทุก ๆ", "เว้นระยะระหว่างรอบที่วาปไปป้าย กันวาปถี่เกินไป (0 = ไปทันทีที่มีเงิน)", 0, 120, 5, function(value)
+		return if value == 0 then "ทันที" else value .. " วิ"
+	end)
+
+	section(upgradePage, "ค่าสเตตัส (Upgrade Board)")
+	for _, stat in STAT_ORDER do
+		local info = STAT_INFO[stat] or { title = stat, desc = "" }
+		if DEFAULTS["up_" .. stat] ~= nil then
+			toggleRow(upgradePage, "up_" .. stat, info.title, info.desc)
+		end
+	end
+
+	section(upgradePage, "สิ่งก่อสร้าง")
+	toggleRow(upgradePage, "upMine", "Expand the Mine", "เพิ่มชั้นเหมือง (ได้คนขนแร่เพิ่ม และปลดล็อกร้านในเมือง)")
+	toggleRow(upgradePage, "upQuarry", "Upgrade Quarry", "เปลี่ยนเป็นแร่ชนิดที่แพงขึ้น")
+	toggleRow(upgradePage, "upPedestal", "Pedestals", "เพิ่มแท่นสุ่ม miner")
+	toggleRow(upgradePage, "upDoors", "ปลดล็อกประตูเหมือง", "เปิดพื้นที่ขุดใหม่ในเหมือง")
+	toggleRow(upgradePage, "upFarm", "อัพเกรดฟาร์มสัตว์", "Incubators · Hatch Speed · Farm Space · Farm Bonus")
+
+	section(upgradePage, "ร้านทั่วไป (General Store)", "ต้องวาปไปที่ร้านในเมือง สคริปต์จะไปให้เอง")
+	toggleRow(upgradePage, "store_BagSpace", "Bigger Bag", "ช่องเก็บ miner +10 (กันกระเป๋าเต็มตอนสุ่ม)")
+	toggleRow(upgradePage, "store_PetSpace", "Pet Pen", "ช่องเก็บสัตว์ +10")
+	toggleRow(upgradePage, "store_EggSpace", "Egg Basket", "ช่องเก็บไข่ +10")
+	toggleRow(upgradePage, "store_SpeedBoots", "Speed Boots", "เดินเร็วขึ้น ไม่ช่วยตอน AFK")
+
+	local function upgradeBoards(): { Instance }
+		local ok, list = pcall(CollectionService.GetTagged, CollectionService, "UpgradeBoard")
+		return if ok then list else {}
+	end
+
+	-- attribute ที่ป้ายของเกมส่งไปกับ remote (บอกว่าเป็นป้ายของแปลงไหน)
+	local BOARD_ID_ATTR: { [string]: string } = { Mine = "Mine", Roll = "Area", Quarry = "Quarry" }
+	-- ค่าสเตตัสแต่ละตัวอยู่บนป้ายไหน (ตามโค้ดป้ายของเกม)
+	local STAT_BOARD: { [string]: string } = {
+		OreValue = "Mine",
+		WalkSpeed = "Mine",
+		MineSpeed = "Mine",
+		RollLuck = "Roll",
+		StockCap = "Stock",
+		HaulSpeed = "Stock",
+		HaulCarry = "Stock",
+	}
+	local BOARD_KINDS = { "Mine", "Roll", "Quarry", "Stock", "Farm" }
+
+	-- ป้ายนี้ของเราไหม: true = ใช่, false = ของแปลงอื่น, nil = บอกไม่ได้ (ไปดูระยะจากสิ่งก่อสร้างของเราแทน)
+	local function boardIsMine(board: Instance, kind: string, plot: string, farm: Instance?): boolean?
+		local owner = board:GetAttribute("Owner")
+		if type(owner) == "number" and owner > 0 then
+			return owner == localPlayer.UserId
+		end
+		local idAttr = BOARD_ID_ATTR[kind]
+		local id = (idAttr and board:GetAttribute(idAttr)) or board:GetAttribute("Plot")
+		if id ~= nil and id ~= "" then
+			return tostring(id) == plot
+		end
+		if farm and board:IsDescendantOf(farm) then
+			return true
+		end
+		local parent = board.Parent
+		while parent and parent ~= workspace do
+			if parent.Name == plot or parent.Name:sub(-#plot - 1) == "_" .. plot then
+				return true
+			end
+			parent = parent.Parent
+		end
+		return nil
+	end
+
+	local function boardAnchor(kind: string): Vector3?
+		if kind == "Farm" then
+			return posOf(myFarm())
+		elseif kind == "Roll" then
+			return posOf(myBuilding("RollArea")) or posOf(myBuilding("Stock"))
+		end
+		return posOf(myBuilding("Stock")) or posOf(myBuilding("Smeltery")) or posOf(myBuilding("Shop"))
+	end
+
+	-- ป้ายอัพเกรดของแปลงเรา (จำผลไว้ 5 วิ)
+	local boardCache: { [string]: { board: Instance?, at: number } } = {}
+	local function myBoard(kind: string): Instance?
+		local cached = boardCache[kind]
+		if cached and os.clock() - cached.at < 5 and (cached.board == nil or cached.board.Parent ~= nil) then
+			return cached.board
+		end
+		local plotValue = plotId()
+		if plotValue == nil then
+			return nil
+		end
+		local plot = tostring(plotValue)
+		local farm = if kind == "Farm" then myFarm() else nil
+		local anchor = boardAnchor(kind)
+		local found: Instance? = nil
+		local nearest, nearestDistance = nil, 300
+		for _, board in upgradeBoards() do
+			if (board:GetAttribute("Kind") or "Mine") == kind then
+				local mine = boardIsMine(board, kind, plot, farm)
+				if mine == true then
+					found = board
+					break
+				elseif mine == nil and anchor then
+					local pos = posOf(board)
+					if pos and (pos - anchor).Magnitude < nearestDistance then
+						nearest, nearestDistance = board, (pos - anchor).Magnitude
+					end
+				end
+			end
+		end
+		found = found or nearest
+		boardCache[kind] = { board = found, at = os.clock() }
+		return found
+	end
+
+	-- จุดยืนหน้าป้าย: หน้าจอของป้ายอยู่ด้าน Front ของ part "Face" (แบบเดียวกับที่เกมสร้างหน้าจอ)
+	local function boardSpot(board: Instance): CFrame?
+		local face = board:FindFirstChild("Face")
+		if face and face:IsA("BasePart") then
+			return standAt(face, Enum.NormalId.Front, board, 4)
+		elseif board:IsA("BasePart") then
+			return standAt(board, Enum.NormalId.Front, board, 4)
+		end
+		local pos = posOf(board)
+		return if pos then CFrame.new(pos + Vector3.new(0, 3, 0)) else nil
+	end
+
+	-- ประตูในเหมือง: ปุ่ม UNLOCK อยู่ด้าน Front ของ Visual.TunnelBacking
+	local function doorSpot(door: Instance): CFrame?
+		local visual = door:FindFirstChild("Visual")
+		local backing = visual and visual:FindFirstChild("TunnelBacking")
+		if backing and backing:IsA("BasePart") then
+			return standAt(backing, Enum.NormalId.Front, door, 4)
+		end
+		local pos = posOf(door)
+		return if pos then CFrame.new(pos + Vector3.new(0, 3, 0)) else nil
+	end
+
+	-- เลเวลค่าสเตตัส: ป้ายของเกมโชว์ค่าจาก attribute บนป้าย ถ้าไม่มีใช้ของตัวผู้เล่น
+	local function statLevel(stat: string, board: Instance?): number
+		local value = board and board:GetAttribute("Up_" .. stat)
+		if type(value) == "number" then
+			return value
+		end
+		return num(pAttr("Up_" .. stat))
+	end
+
+	-- ป้ายแบบเลเวล (Expand Mine / Upgrade Quarry / Pedestals)
+	local function boardCandidate(list: { Candidate }, kind: string, levelAttr: string, defaultMax: number, remoteName: string, label: (Instance, number) -> string)
+		local board = myBoard(kind)
+		local idAttr = BOARD_ID_ATTR[kind]
+		if not board or not idAttr or board:GetAttribute("Busy") == true then
+			return
+		end
+		local level = num(board:GetAttribute(levelAttr), 1)
+		local max = num(board:GetAttribute("Max"), defaultMax)
+		local cost = board:GetAttribute("Cost")
+		if level >= max or type(cost) ~= "number" then
+			return
+		end
+		local name = label(board, level)
+		table.insert(list, {
+			name = name,
+			title = name,
+			cost = cost,
+			big = true,
+			place = board,
+			spot = function()
+				return boardSpot(board)
+			end,
+			buy = function()
+				fire(remoteName, board:GetAttribute(idAttr))
+				return waitFor(function()
+					return num(board:GetAttribute(levelAttr), 1) > level or board:GetAttribute("Busy") == true
+				end, 2)
+			end,
+		})
+	end
+
+	local function upgradeCandidates(): { Candidate }
+		local list: { Candidate } = {}
+
+		-- ค่าสเตตัส: เลเวล/ราคาอ่านจากป้าย (ค่าเดียวกับที่ป้ายของเกมโชว์) ถ้าไม่มีใช้สูตรของเกม (Upgrades.cost)
+		for _, stat in STAT_ORDER do
+			if config["up_" .. stat] then
+				local board = myBoard(STAT_BOARD[stat] or "Mine")
+				local level = statLevel(stat, board)
+				local cost = board and board:GetAttribute("UpCost_" .. stat)
+				if type(cost) ~= "number" and Upgrades and Upgrades.cost then
+					local ok, value = pcall(Upgrades.cost, stat, level)
+					cost = if ok then value else nil
+				end
+				if type(cost) == "number" and cost < math.huge then
+					local title = (STAT_INFO[stat] and STAT_INFO[stat].title) or stat
+					table.insert(list, {
+						name = string.format("%s Lv.%d", title, level + 1),
+						title = title,
+						cost = cost,
+						place = board,
+						spot = function()
+							return if board then boardSpot(board) else nil
+						end,
+						buy = function()
+							local beforePlayer = num(pAttr("Up_" .. stat))
+							local beforeBoard = num(board and board:GetAttribute("Up_" .. stat))
+							fire("StatUpgradeRequest", stat)
+							return waitFor(function()
+								return num(pAttr("Up_" .. stat)) > beforePlayer or num(board and board:GetAttribute("Up_" .. stat)) > beforeBoard
+							end, 1.5)
+						end,
+					})
+				end
+			end
+		end
+
+		if config.upMine then
+			boardCandidate(list, "Mine", "Level", 10, "MineUpgradeRequest", function(_, level)
+				return string.format("Expand Mine → Floor %d", level + 1)
+			end)
+		end
+		if config.upQuarry then
+			boardCandidate(list, "Quarry", "Level", 10, "QuarryUpgradeRequest", function(board, level)
+				return "Upgrade Quarry → " .. tostring(board:GetAttribute("NextOre") or ("Lv." .. (level + 1)))
+			end)
+		end
+		if config.upPedestal then
+			boardCandidate(list, "Roll", "Count", 6, "RollAreaRequest", function(_, count)
+				return string.format("Pedestal %d → %d", count, count + 1)
+			end)
+		end
+
+		-- ประตูในเหมือง
+		if config.upDoors then
+			local plot = plotId()
+			local ok, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
+			if ok and plot ~= nil then
+				for _, door in doors do
+					if door:GetAttribute("Locked") == true and tostring(door:GetAttribute("Mine")) == tostring(plot) then
+						local doorName = "ปลดล็อกประตู " .. tostring(door:GetAttribute("DoorKey"))
+						table.insert(list, {
+							name = doorName,
+							title = doorName,
+							cost = num(door:GetAttribute("UnlockCost")),
+							big = true,
+							place = door,
+							spot = function()
+								return doorSpot(door)
+							end,
+							buy = function()
+								fire("DoorUnlockRequest", door:GetAttribute("Mine"), door:GetAttribute("DoorKey"))
+								return waitFor(function()
+									return door:GetAttribute("Locked") ~= true
+								end, 2)
+							end,
+						})
+					end
+				end
+			end
+		end
+
+		-- อัพเกรดฟาร์ม
+		if config.upFarm and PetFarm then
+			local board = myBoard("Farm")
+			if board then
+				for _, key in PetFarm.ORDER or {} do
+					local level = num(board:GetAttribute("Up_" .. key))
+					local def = PetFarm.DEFS and PetFarm.DEFS[key]
+					local max = num(board:GetAttribute("Max_" .. key), def and def.max or 0)
+					local cost = board:GetAttribute("UpCost_" .. key)
+					if type(cost) ~= "number" and PetFarm.cost then
+						local ok, value = pcall(PetFarm.cost, key, level)
+						cost = if ok then value else nil
+					end
+					if level < max and type(cost) == "number" and cost < math.huge then
+						local title = "Farm " .. ((def and def.title) or key)
+						table.insert(list, {
+							name = string.format("%s Lv.%d", title, level + 1),
+							title = title,
+							cost = cost,
+							place = board,
+							spot = function()
+								return boardSpot(board)
+							end,
+							buy = function()
+								fire("FarmAction", "upgrade", key)
+								return waitFor(function()
+									return num(board:GetAttribute("Up_" .. key)) > level
+								end, 1.5)
+							end,
+						})
+					end
+				end
+			end
+		end
+
+		-- ร้านทั่วไป (ต้องวาปไปร้าน)
+		if GeneralStore and GeneralStore.BY_ID then
+			local owned = decode(pAttr("Store"))
+			local income = num(pAttr("IncomePerMin"), 30)
+			for _, id in { "BagSpace", "PetSpace", "EggSpace", "SpeedBoots" } do
+				local item = GeneralStore.BY_ID[id]
+				local have = num(owned[id])
+				if config["store_" .. id] and item and (item.max == nil or have < item.max) then
+					local ok, price = pcall(GeneralStore.price, item, have, income)
+					if ok and type(price) == "number" and price < math.huge then
+						table.insert(list, {
+							name = string.format("%s %d/%s", item.name or id, have + 1, tostring(item.max or "?")),
+							title = item.name or id,
+							cost = price,
+							place = "GeneralStore",
+							spot = function()
+								return hubSpot("GeneralShop", "OpenStore")
+							end,
+							buy = function()
+								fire("StoreAction", "buy", id)
+								return waitFor(function()
+									return num(decode(pAttr("Store"))[id]) > have
+								end, 2)
+							end,
+						})
+					end
+				end
+			end
+		end
+
+		return list
+	end
+
+	-- ซื้อไม่สำเร็จ: พักของชิ้นนั้น 30 วิ ถ้าวาปไปยืนแล้วก็ยังไม่ได้ พักทั้งป้าย 30 วิ
+	local failedUpgrades: { [string]: number } = {}
+	local failedPlaces: { [any]: number } = {}
+
+	local function usable(item: Candidate): boolean
+		local now = os.clock()
+		return (failedUpgrades[item.name] or 0) < now and (item.place == nil or (failedPlaces[item.place] or 0) < now)
+	end
+
+	-- เลือกของที่จะซื้อตามโหมด: คืน (ของที่จะซื้อ, ข้อความสถานะ, สี)
+	local function pickUpgrade(): (Candidate?, string?, Color3?)
+		local money = cash()
+		local held = heldCash()
+		local spendable = money * (1 - config.reservePct / 100) - held
+		if held > 0 and spendable <= 0 then
+			return nil, string.format("พักซื้อ: กันเงิน %s ไว้ซื้อ %s เข้า Index", fmtCash(held), moneyHold.label), Theme.info
+		end
+		local list = upgradeCandidates()
+		if #list == 0 then
+			return nil, "ไม่มีอะไรให้ซื้อ (ปิดไว้หมด หรือ MAX แล้ว)", Theme.sub
+		end
+		table.sort(list, function(a, b)
+			return a.cost < b.cost
+		end)
+		if config.upgradeMode == "progress" then
+			for _, item in list do
+				if item.big and usable(item) then
+					if item.cost <= spendable then
+						return item
+					elseif item.cost <= money * 4 then
+						return nil,
+							string.format("เก็บเงินรอ %s: %s / %s (%d%%)", item.name, fmtCash(money), fmtCash(item.cost), math.floor(money / math.max(item.cost, 1) * 100)),
+							Theme.info
+					end
+					break
+				end
+			end
+		end
+		for _, item in list do
+			if item.cost <= spendable and usable(item) then
+				return item
+			end
+		end
+		local nextItem = list[1]
+		return nil, string.format("รอเงิน: ถัดไป %s (%s)", nextItem.name, fmtCash(nextItem.cost)), Theme.sub
+	end
+
+	local nextTripAt = 0
+
+	local function upgradeCycle()
+		if not alive() then
+			upgradeRow.setStatus("รอตัวละครเกิด...", Theme.sub)
+			return
+		end
+		local target, statusText, statusColor = pickUpgrade()
+		if not target then
+			upgradeRow.setStatus(statusText or "", statusColor)
+			return
+		end
+		local waitLeft = nextTripAt - os.clock()
+		if waitLeft > 0 then
+			upgradeRow.setStatus(string.format("ถัดไป %s (%s) · วาปไปซื้อในอีก %d วิ", target.name, fmtCash(target.cost), math.ceil(waitLeft)), Theme.sub)
+			return
+		end
+
+		-- วาปไปป้ายแล้วซื้อรวดเดียว: ซื้อของถัดไปต่อเลย ถ้าอยู่ป้ายอื่นก็วาปต่อ (ไม่เกิน 10 วิต่อรอบ)
+		local bought, spent = 0, 0
+		local summary: { [string]: { count: number, cost: number, last: string, big: boolean? } } = {}
+		local order: { string } = {}
+		local problem: string? = nil
+		local lastName = ""
+		withHops("Upgrades: ซื้อ " .. target.name, function(hopTo)
+			-- เลือกใหม่อีกครั้ง เผื่อเงินเปลี่ยนระหว่างรอคิววาปของระบบอื่น
+			local current: Candidate? = pickUpgrade()
+			local here: any = false
+			local placeFails = 0
+			local stopAt = os.clock() + 10
+			while current and running and not paused and config.autoUpgrade and os.clock() < stopAt do
+				local item: Candidate = current
+				local justHopped = false
+				local noSpot = false
+				if item.place ~= here then
+					here = item.place
+					placeFails = 0
+					local spot = item.spot and item.spot()
+					if not spot then
+						noSpot = true
+					elseif not nearPos(spot.Position, 6) then
+						justHopped = hopTo(spot)
+						if not justHopped then
+							problem = "ต้องยืนที่ป้ายถึงจะอัพได้: เปิด 'วาปไปกดแป๊บเดียว' ในแท็บ Farm หรือไปยืนที่ป้ายเอง"
+						end
+					end
+				end
+				setActivity("Upgrades: ซื้อ " .. item.name)
+				local since = os.clock()
+				local ok = item.buy()
+				if not ok and justHopped then
+					-- เพิ่งวาปมา เซิร์ฟเวอร์อาจยังไม่เห็นตำแหน่งใหม่: รอแป๊บแล้วลองอีกครั้ง
+					task.wait(0.4)
+					ok = item.buy()
+				end
+				if ok then
+					placeFails = 0
+					bought += 1
+					spent += item.cost
+					counters.upgrades += 1
+					local key = item.title or item.name
+					local entry = summary[key]
+					if not entry then
+						entry = { count = 0, cost = 0, last = item.name, big = item.big }
+						summary[key] = entry
+						table.insert(order, key)
+					end
+					entry.count += 1
+					entry.cost += item.cost
+					entry.last = item.name
+					lastName = item.name
+				else
+					failedUpgrades[item.name] = os.clock() + 30
+					placeFails += 1
+					if item.place ~= nil and (justHopped or placeFails >= 2) then
+						failedPlaces[item.place] = os.clock() + 30
+					end
+					local notice = noticeSince(since)
+					problem = string.format(
+						"ซื้อ %s ไม่สำเร็จ%s จะลองใหม่ใน 30 วิ",
+						item.name,
+						if notice then " (เกมแจ้ง: " .. notice .. ")" elseif noSpot then " (หาป้ายไม่เจอ)" else ""
+					)
+				end
+				current = pickUpgrade()
+			end
+		end)
+		nextTripAt = os.clock() + config.upgradeEvery
+
+		for _, key in order do
+			local entry = summary[key]
+			if entry.count == 1 then
+				log("buy", string.format("ซื้อ %s (%s)", entry.last, fmtCash(entry.cost)))
+			else
+				log("buy", string.format("ซื้อ %s %d ครั้ง ถึง %s (รวม %s)", key, entry.count, entry.last, fmtCash(entry.cost)))
+			end
+			if entry.big then
+				toast("⬆ " .. entry.last, Theme.info)
+			end
+		end
+		if bought > 0 then
+			upgradeRow.setStatus(
+				string.format("ซื้อ %d อย่าง (รวม %s) ล่าสุด %s · %s%s", bought, fmtCash(spent), lastName, os.date("%H:%M:%S"), if problem then "\n⚠ " .. problem else ""),
+				if problem then Theme.accent else Theme.good
+			)
+		elseif problem then
+			upgradeRow.setStatus(problem, Theme.bad)
+		end
+	end
+	startLoop("Auto Upgrade", "autoUpgrade", 1.2, upgradeRow, upgradeCycle)
+
+	section(upgradePage, "ตรวจสอบ", "ถ้าอัพไม่ติด กดปุ่มนี้ดูว่าสคริปต์หาป้ายเจอ และยืนถูกที่ไหม (ผลอยู่ในแท็บ Log)")
+	buttonRow(upgradePage, {
+		{
+			label = "ทดสอบวาปไปทุกป้าย",
+			callback = function()
+				withHops("ทดสอบ: วาปไปป้ายอัพเกรด", function(hopTo)
+					for _, kind in BOARD_KINDS do
+						boardCache[kind] = nil
+						local board = myBoard(kind)
+						local spot = board and boardSpot(board)
+						if board and spot then
+							hopTo(spot)
+							log("info", "ป้าย " .. kind .. ": เจอแล้ว (" .. board:GetFullName() .. ")")
+							task.wait(1)
+						else
+							log("warn", "ป้าย " .. kind .. ": หาไม่เจอ" .. (if kind == "Farm" then " (ยังไม่มีฟาร์ม?)" else ""))
+						end
+					end
+				end)
+			end,
+		},
+	})
+
+	refreshers.Upgrades = function()
+		local parts = {}
+		for _, kind in BOARD_KINDS do
+			table.insert(parts, kind .. (if myBoard(kind) then " ✅" else " ❌"))
+		end
+		boardCard.Text = string.format(
+			"ป้ายของคุณ: %s\nอัพไปแล้วในรอบนี้ %d ครั้ง · วาปไปซื้อ%s",
+			table.concat(parts, " · "),
+			counters.upgrades,
+			if config.upgradeEvery == 0 then "ทันทีที่มีเงิน" else "ทุก " .. config.upgradeEvery .. " วิ"
+		)
+	end
+end
+
+---------------------------------------------------------------------
+-- 14) ROLL: ซื้อ miner จากแท่นสุ่มของเรา (RollArea_<plot>/PedestalN)
+---------------------------------------------------------------------
+do
+	local rollPage = pages.Roll
+
+	section(
+		rollPage,
+		"สุ่ม miner",
+		"ซื้อตัวที่ rarity ถึงที่ตั้งไว้ (หรือยังไม่มีใน Index) และเงินพอ เกมให้ซื้อเฉพาะตอนอยู่ใกล้แท่น สคริปต์จะวาปไปซื้อให้ · ตัวที่ไม่เอา / แพงเกินจะรอ จะสุ่มต่อให้เอง"
+	)
+	local pedestalCard = liveCard(rollPage)
+	local rollRow = toggleRow(rollPage, "autoRoll", "Auto Roll", "ซื้อ miner ที่ต้องการให้เอง + สุ่มต่อให้")
+	cycleRow(rollPage, "rollMinRarity", "Rarity ขั้นต่ำที่จะซื้อ", "ต่ำกว่านี้ไม่ซื้อ (กันกระเป๋าเต็ม)", RARITY_NAMES, rarityColor)
+	stepperRow(rollPage, "rollMaxSpendPct", "ใช้เงินได้ไม่เกิน", "ต่อ miner 1 ตัว เทียบกับเงินที่มี", 10, 100, 10, function(value)
+		return value .. "%"
+	end)
+	toggleRow(
+		rollPage,
+		"useGameAutoRoll",
+		"ใช้ Auto Roll ของเกม (ถ้ามีสิทธิ์)",
+		"ได้สิทธิ์จาก Game Pass หรือช่วงทดลองฟรีจากการเข้ากลุ่ม เกมจะสุ่มเองจนเจอ miner ที่เลือก แล้วสคริปต์ซื้อให้"
+	)
+	toggleRow(rollPage, "pullLever", "ดึงคันโยกเอง (ตอนไม่มีสิทธิ์ Auto Roll)", "วาปไปดึงคันโยกที่เครื่องสุ่มให้ ถ้าหาคันโยกไม่เจอ สถานะจะบอก")
+	toggleRow(rollPage, "equipBest", "Equip Best (miner)", "ใส่ miner ที่ดีที่สุดให้หลังซื้อ และทุก 1 นาที")
+	toggleRow(
+		rollPage,
+		"bagAutoDelete",
+		"ลบ miner ที่แย่สุดเมื่อกระเป๋าเต็ม",
+		"ปิดไว้ก่อน (ลบแล้วเอาคืนไม่ได้) · ลบเฉพาะตัวที่ rarity ต่ำกว่าขั้นต่ำด้านบน ไม่ลบตัวโปรด ⭐ / ตัวบน hotbar / ตัวที่ทำงานที่ประตู และเหลือไว้อย่างน้อยชนิดละ 1 ตัว"
+	)
+
+	local function myPedestals(): ({ Instance }, Instance?)
+		local area = myBuilding("RollArea")
+		local list = {}
+		if area then
+			for _, child in area:GetChildren() do
+				if child.Name:match("^Pedestal%d") then
+					table.insert(list, child)
+				end
+			end
+		end
+		table.sort(list, function(a, b)
+			return num(a.Name:match("%d+")) < num(b.Name:match("%d+"))
+		end)
+		return list, area
+	end
+
+	-- miner ที่แท่นโชว์อยู่: ชื่อ, rarity, ราคา (สูตรเดียวกับป้ายของเกม)
+	local function pedestalResult(pedestal: Instance): MinerInfo?
+		local key = pedestal:GetAttribute("Result") or ""
+		if key == "" then
+			return nil
+		end
+		local folder = getMinerModels()
+		local model = folder and folder:FindFirstChild(key)
+		local rarity = (model and model:GetAttribute("Rarity")) or "?"
+		local def = MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[rarity]
+		local price = (def and def.price) or 0
+		if def and Economy and Economy.minerPrice then
+			local ok, value = pcall(Economy.minerPrice, def, pedestal:GetAttribute("ResultSize"), pedestal:GetAttribute("ResultMut"), pedestal:GetAttribute("ResultQ"))
+			if ok and type(value) == "number" then
+				price = value
+			end
+		end
+		return {
+			key = key,
+			name = (model and model:GetAttribute("DisplayName")) or key,
+			rarity = rarity,
+			tier = rarityTier(rarity),
+			price = price,
+			mut = pedestal:GetAttribute("ResultMut"),
+			revealAt = num(pedestal:GetAttribute("RevealAt")),
+			rollId = pedestal:GetAttribute("RollId"),
+		}
+	end
+
+	local function hasAutoRollAccess(): boolean
+		return pAttr("Pass_AutoRoll") == true or pAttr("AutoRollAccess") == true
+	end
+
+	-- miner ที่ต้องการ: ยังไม่มีใน Index (Auto Index) หรือ rarity ถึงขั้นต่ำ (Auto Roll)
+	local function isWanted(info: MinerInfo, indexed: { [string]: boolean }, minTier: number): boolean
+		return (config.autoIndex and not indexed[info.key]) or (config.autoRoll and info.tier >= minTier)
+	end
+
+	-- รายชื่อที่ส่งให้ Auto Roll ของเกม: ตัวที่ขาดใน Index + ตัวที่ rarity ถึงขั้นต่ำ
+	-- (ไม่ใส่ตัวที่โชว์อยู่บนแท่นแต่เราข้ามไป ไม่งั้นเกมเจอตัวเดิมแล้วหยุดสุ่มทันที)
+	local function wantedMinerNames(exclude: { [string]: boolean }?): ({ string }, number)
+		local names = {}
+		local missing = 0
+		local indexed = indexSets()
+		local minTier = rarityTier(config.rollMinRarity)
+		for rarityName, list in minerPool() do
+			local byRarity = config.autoRoll and rarityTier(rarityName) >= minTier
+			for _, name in list do
+				local isMissing = config.autoIndex and not indexed[name]
+				if isMissing then
+					missing += 1
+				end
+				if (byRarity or isMissing) and not (exclude and exclude[name]) then
+					table.insert(names, name)
+				end
+			end
+		end
+		return names, missing
+	end
+
+	-- ซื้อได้แท่นละ 2 ครั้งต่อผลสุ่ม 1 ครั้ง (กันวนซื้อตัวที่เกมไม่ยอมขาย)
+	local buyTries: { [Instance]: { rollId: any, tries: number } } = {}
+	local function triesFor(pedestal: Instance, rollId: any): number
+		local entry = buyTries[pedestal]
+		return if entry and entry.rollId == rollId then entry.tries else 0
+	end
+
+	-- จุดยืนหน้าจอของแท่น: ปุ่ม BUY อยู่บนจอ InfoGui ของ DisplayPanel (เกมให้กดได้ในระยะ 45 stud)
+	local function pedestalSpot(pedestal: Instance): CFrame?
+		local panel = pedestal:FindFirstChild("DisplayPanel", true)
+		if panel and panel:IsA("BasePart") then
+			local surface = panel:FindFirstChildOfClass("SurfaceGui")
+			return standAt(panel, if surface then surface.Face else Enum.NormalId.Front, pedestal, 5)
+		end
+		local pos = posOf(pedestal)
+		return if pos then CFrame.new(pos + Vector3.new(0, 4, 0)) else nil
+	end
+
+	local function buyMiner(pedestal: Instance, info: MinerInfo, areaName: string, isNew: boolean): (boolean, string?)
+		local entry = buyTries[pedestal]
+		if entry and entry.rollId == info.rollId then
+			if entry.tries >= 2 then
+				return false, nil
+			end
+			entry.tries += 1
+		else
+			entry = { rollId = info.rollId, tries = 1 }
+			buyTries[pedestal] = entry
+		end
+
+		-- ซื้อสำเร็จ = จอแท่นว่าง (ผลเดิมหายแต่ยังเป็นรอบสุ่มเดิม) หรือจำนวน miner เพิ่ม
+		local ownedBefore = num(pAttr("MinersOwned"), -1)
+		local function done(): boolean
+			if (pedestal:GetAttribute("Result") or "") == "" and pedestal:GetAttribute("RollId") == info.rollId then
+				return true
+			end
+			return ownedBefore >= 0 and num(pAttr("MinersOwned"), -1) > ownedBefore
+		end
+		local function changed(): boolean
+			return done() or (pedestal:GetAttribute("Result") or "") ~= info.key or pedestal:GetAttribute("RollId") ~= info.rollId
+		end
+
+		-- ต้องอยู่ใกล้แท่นถึงจะซื้อได้: ไกลเกิน 30 stud (หรือครั้งแรกซื้อไม่ติด) วาปไปหน้าจอของแท่นก่อน
+		local since = os.clock()
+		local spot = pedestalSpot(pedestal)
+		if spot and (entry.tries >= 2 or not nearPos(spot.Position, 30)) then
+			withHops("Roll: ซื้อ " .. info.name, function(hopTo)
+				hopTo(spot)
+				fire("RollBuy", areaName, pedestal.Name)
+				if not waitFor(changed, 1.2) then
+					task.wait(0.3)
+					fire("RollBuy", areaName, pedestal.Name)
+					waitFor(changed, 1.2)
+				end
+			end)
+		else
+			fire("RollBuy", areaName, pedestal.Name)
+			waitFor(changed, 1.5)
+		end
+
+		if done() then
+			counters.miners += 1
+			if isNew then
+				counters.indexNew += 1
+			end
+			local mutText = if info.mut and info.mut ~= "" then " · " .. tostring(info.mut) else ""
+			local newText = if isNew then "  📖 ใหม่ใน Index" else ""
+			log("buy", string.format("ซื้อ miner %s (%s%s) %s%s", info.name, info.rarity, mutText, fmtCash(info.price), newText))
+			toast(string.format("🎲 ได้ %s  [%s%s]%s", info.name, info.rarity, mutText, newText), rarityColor(info.rarity))
+			if config.equipBest then
+				task.delay(1, function()
+					fire("BagAction", "equipBest")
+				end)
+			end
+			return true, nil
+		end
+		return false, noticeSince(since)
+	end
+
+	-- คันโยกสุ่ม: ProximityPrompt / ClickDetector ในพื้นที่สุ่มของเรา (ไม่นับปุ่ม AutoRollPrompt ที่เปิดหน้าต่าง Auto Roll)
+	-- ถ้าในพื้นที่ไม่มี ใช้ปุ่มใกล้ ๆ ที่เขียนว่า roll / pull / lever
+	local function findLevers(area: Instance): { Instance }
+		local found = {}
+		for _, descendant in area:GetDescendants() do
+			if (descendant:IsA("ProximityPrompt") and descendant.Name ~= "AutoRollPrompt") or descendant:IsA("ClickDetector") then
+				table.insert(found, descendant)
+			end
+		end
+		if #found == 0 then
+			local center = posOf(area)
+			for prompt in allPrompts do
+				local pos = prompt.Parent and posOf(prompt.Parent)
+				if center and pos and prompt.Name ~= "AutoRollPrompt" and (pos - center).Magnitude < 80 then
+					local words = (prompt.ActionText .. " " .. prompt.ObjectText .. " " .. prompt.Name):lower()
+					if words:find("roll", 1, true) or words:find("pull", 1, true) or words:find("lever", 1, true) then
+						table.insert(found, prompt)
+					end
+				end
+			end
+		end
+		return found
+	end
+
+	-- คันโยกของแท่นนี้: อยู่ในแท่น หรือใกล้แท่นที่สุด (เครื่องที่มีคันโยกเดียวจะได้คันเดียวกันทุกแท่น)
+	local function leverFor(pedestal: Instance, levers: { Instance }): Instance?
+		local pedestalPos = posOf(pedestal)
+		local best, bestDistance = nil, math.huge
+		for _, lever in levers do
+			if lever:IsDescendantOf(pedestal) then
+				return lever
+			end
+			local pos = lever.Parent and posOf(lever.Parent)
+			if pedestalPos and pos and (pos - pedestalPos).Magnitude < bestDistance then
+				best, bestDistance = lever, (pos - pedestalPos).Magnitude
+			end
+		end
+		return best
+	end
+
+	local leverPauseUntil = 0
+
+	-- ดึงคันโยกให้แท่นที่ต้องสุ่มใหม่ (แท่นว่าง / ได้ตัวที่ไม่เอา)
+	local function pullLevers(area: Instance, targets: { Instance }): (boolean, string?)
+		if os.clock() < leverPauseUntil then
+			return false, string.format("ดึงคันโยกแล้วแท่นไม่สุ่ม จะลองใหม่ใน %d วิ", math.ceil(leverPauseUntil - os.clock()))
+		end
+		local levers = findLevers(area)
+		if #levers == 0 then
+			return false, "หาคันโยกที่เครื่องสุ่มไม่เจอ: ต้องดึงเอง หรือใช้ Auto Roll ของเกม"
+		end
+		local plan: { { lever: Instance, pedestals: { Instance } } } = {}
+		for _, pedestal in targets do
+			local lever = leverFor(pedestal, levers)
+			if lever then
+				local entry = nil
+				for _, existing in plan do
+					if existing.lever == lever then
+						entry = existing
+						break
+					end
+				end
+				if not entry then
+					entry = { lever = lever, pedestals = {} }
+					table.insert(plan, entry)
+				end
+				table.insert(entry.pedestals, pedestal)
+			end
+		end
+		local pulled, since = 0, os.clock()
+		withHops("Roll: ดึงคันโยก", function(hopTo)
+			for _, entry in plan do
+				local lever = entry.lever
+				local enabled = not lever:IsA("ProximityPrompt") or (lever :: ProximityPrompt).Enabled
+				if lever.Parent and enabled then
+					local before = {}
+					for _, pedestal in entry.pedestals do
+						before[pedestal] = pedestal:GetAttribute("RollId")
+					end
+					local pos = posOf(lever.Parent)
+					if pos and not nearPos(pos, 6) then
+						hopTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+					end
+					if lever:IsA("ProximityPrompt") then
+						firePrompt(lever)
+					elseif lever:IsA("ClickDetector") then
+						fireClick(lever)
+					end
+					if waitFor(function()
+						for _, pedestal in entry.pedestals do
+							if pedestal:GetAttribute("RollId") ~= before[pedestal] then
+								return true
+							end
+						end
+						return false
+					end, 1.5) then
+						pulled += 1
+					end
+				end
+			end
+		end)
+		if pulled > 0 then
+			counters.rolls += pulled
+			return true, nil
+		end
+		leverPauseUntil = os.clock() + 20
+		local notice = noticeSince(since)
+		return false, "ดึงคันโยกแล้วแท่นไม่สุ่ม" .. (if notice then " (เกมแจ้ง: " .. notice .. ")" else "")
+	end
+
+	-- สั่ง Auto Roll ของเกม: ยิงจากที่ยืนอยู่ก่อน ถ้าเกมไม่เริ่ม วาปไปที่แท่นแล้วลองอีกครั้ง (แล้วจำไว้ว่าต้องวาป)
+	local autoRollNeedsHop = false
+	local function startGameAutoRoll(names: { string }, pedestals: { Instance }): (boolean, string?)
+		local since = os.clock()
+		local statusBefore = pAttr("AutoRollStatus")
+		local function started(): boolean
+			return pAttr("AutoRolling") == true or pAttr("AutoRollStatus") ~= statusBefore
+		end
+		if not autoRollNeedsHop then
+			fire("AutoRoll", "start", names)
+			if waitFor(started, 1.5) then
+				return true, nil
+			end
+		end
+		local spot = pedestals[1] and pedestalSpot(pedestals[1])
+		local ok = false
+		withHops("Roll: เริ่ม Auto Roll ของเกม", function(hopTo)
+			if spot and not nearPos(spot.Position, 30) then
+				hopTo(spot)
+			end
+			fire("AutoRoll", "start", names)
+			ok = waitFor(started, 1.5)
+		end)
+		if ok then
+			autoRollNeedsHop = true
+		end
+		return ok, noticeSince(since)
+	end
+
+	-- กระเป๋าเต็ม: ลบ miner ที่แย่ที่สุด (เฉพาะ rarity ต่ำกว่าขั้นต่ำ ไม่ใช่ตัวโปรด / บน hotbar / ทำงานที่ประตู และเหลือชนิดละอย่างน้อย 1 ตัว)
+	local lastDeleteAt = 0
+	local function freeBagSpace(need: number, minTier: number): number
+		local list = bag.list
+		if os.clock() - lastDeleteAt < 8 or type(list) ~= "table" then
+			return 0
+		end
+		local folder = getMinerModels()
+		local copies: { [any]: number } = {}
+		for _, item in list do
+			if type(item) == "table" and item.id ~= nil then
+				copies[item.id] = (copies[item.id] or 0) + 1
+			end
+		end
+		local pool = {}
+		for _, item in list do
+			if type(item) == "table" and item.uid ~= nil and item.id ~= nil and not item.fav and item.slot == nil and item.door == nil then
+				local model = folder and folder:FindFirstChild(tostring(item.id))
+				local tier = rarityTier(model and model:GetAttribute("Rarity"))
+				if tier > 0 and tier < minTier then
+					table.insert(pool, { uid = item.uid, id = item.id, tier = tier, power = num(item.power, num(item.kg)) })
+				end
+			end
+		end
+		table.sort(pool, function(a, b)
+			if a.tier ~= b.tier then
+				return a.tier < b.tier
+			end
+			return a.power < b.power
+		end)
+		local picked, names = {}, {}
+		for _, candidate in pool do
+			if #picked >= need then
+				break
+			end
+			if (copies[candidate.id] or 0) > 1 then
+				copies[candidate.id] -= 1
+				table.insert(picked, candidate.uid)
+				table.insert(names, minerDisplayName(tostring(candidate.id)))
+			end
+		end
+		if #picked == 0 then
+			return 0
+		end
+		lastDeleteAt = os.clock()
+		fire("BagAction", "delete", picked)
+		log("warn", string.format("กระเป๋าเต็ม: ลบ miner %d ตัว (%s)", #picked, table.concat(names, ", ")))
+		task.delay(1, fire, "BagAction", "sync")
+		return #picked
+	end
+
+	local autoRollStartedAt = 0
+	local autoRollFails = 0
+	local autoRollOffUntil = 0
+	local lastAutoRollLog = 0
+	local lastBagSync = 0
+	local waitingKey: string? = nil
+	local waitingSince = 0
+
+	local function rollCycle()
+		if not (config.autoRoll or config.autoIndex) then
+			return
+		end
+		if not alive() then
+			rollRow.setStatus("รอตัวละครเกิด...", Theme.sub)
+			return
+		end
+		local pedestals, area = myPedestals()
+		if not area then
+			rollRow.setStatus("ยังไม่พบแท่นสุ่มของคุณ (RollArea_" .. tostring(plotId()) .. ")", Theme.bad)
+			return
+		end
+		-- ขอข้อมูลกระเป๋าจากเซิร์ฟเวอร์เป็นระยะ (แบบเดียวกับตอนเปิดกระเป๋าในเกม) ไว้เช็คว่าเต็มไหม
+		if os.clock() - lastBagSync > 30 then
+			lastBagSync = os.clock()
+			fire("BagAction", "sync")
+		end
+		local areaName = area.Name:match("^RollArea_(.+)$") or tostring(plotId())
+		local minTier = rarityTier(config.rollMinRarity)
+		local now = workspace:GetServerTimeNow()
+		local money = cash()
+		local income = math.max(num(pAttr("IncomePerMin")), ratePerMinute())
+		local indexed = indexSets()
+		local full = bagFull()
+
+		local skipped: { [string]: boolean } = {} -- ตัวที่โชว์อยู่แต่ไม่ซื้อ (ไม่ส่งให้ Auto Roll ของเกมหา)
+		local needRoll: { Instance } = {} -- แท่นที่ต้องสุ่มใหม่: ว่าง / ตัวที่ไม่เอา / แพงเกินรอ
+		local rollingCount = 0
+		local waitingFor: MinerInfo? = nil
+		local waitingPedestal: Instance? = nil
+		local waitMinutes, waitEta = 0, 0
+
+		for _, pedestal in pedestals do
+			local info = pedestalResult(pedestal)
+			if info == nil then
+				table.insert(needRoll, pedestal)
+			elseif now < info.revealAt then
+				rollingCount += 1
+			elseif not isWanted(info, indexed, minTier) then
+				skipped[info.key] = true
+				table.insert(needRoll, pedestal)
+			elseif full then
+				skipped[info.key] = true
+			else
+				-- ตัวที่ยังไม่มีใน Index ใช้เพดานเงินของแท็บ Index (ถ้าเข้าเงื่อนไข rarity ด้วย ใช้เพดานที่สูงกว่า)
+				local isNew = config.autoIndex and not indexed[info.key]
+				local byRarity = config.autoRoll and info.tier >= minTier
+				local pct = config.rollMaxSpendPct
+				if isNew then
+					pct = if byRarity then math.max(pct, config.indexMaxSpendPct) else config.indexMaxSpendPct
+				end
+				if info.price <= money * pct / 100 then
+					if triesFor(pedestal, info.rollId) >= 2 then
+						-- ลองซื้อครบ 2 ครั้งแล้วไม่ได้: ข้ามไปสุ่มใหม่
+						skipped[info.key] = true
+						table.insert(needRoll, pedestal)
+					else
+						local ok, why = buyMiner(pedestal, info, areaName, isNew)
+						if ok then
+							waitingKey = nil
+							return
+						end
+						rollRow.setStatus(
+							string.format(
+								"ซื้อ %s ไม่สำเร็จ%s · %s",
+								info.name,
+								if why then " (เกมแจ้ง: " .. why .. ")" else "",
+								if triesFor(pedestal, info.rollId) >= 2 then "ข้ามไปสุ่มใหม่" else "จะวาปไปที่แท่นแล้วลองอีกครั้ง"
+							),
+							Theme.bad
+						)
+						return
+					end
+				else
+					-- เงินไม่พอ: รอเฉพาะตัวที่เก็บเงินทันในไม่กี่นาที (ตัวที่ขาดใน Index รอได้ 10 นาที ตัวอื่น 2 นาที) ไม่งั้นสุ่มต่อเลย
+					local minutes = if isNew then 10 else 2
+					local eta = if income > 0 then (info.price * 100 / pct - money) / income else math.huge
+					if eta <= minutes then
+						if waitingFor == nil or info.price < waitingFor.price then
+							waitingFor, waitingPedestal, waitMinutes, waitEta = info, pedestal, minutes, eta
+						end
+					else
+						skipped[info.key] = true
+						table.insert(needRoll, pedestal)
+					end
+				end
+			end
+		end
+
+		-- กระเป๋าเต็ม: ซื้อไม่ได้ สุ่มต่อก็เปล่าประโยชน์
+		if full then
+			local count, cap = bag.count or 0, bag.cap or 0
+			if config.bagAutoDelete then
+				local freed = freeBagSpace(math.clamp(count - cap + 1, 1, 5), minTier)
+				if freed > 0 then
+					rollRow.setStatus(string.format("กระเป๋าเต็ม (%d/%d): ลบ miner ที่แย่สุด %d ตัวแล้ว", count, cap, freed), Theme.accent)
+					return
+				end
+			end
+			rollRow.setStatus(
+				string.format(
+					"กระเป๋า miner เต็ม (%d/%d) ซื้อเพิ่มไม่ได้: เปิด Bigger Bag ในแท็บ Upgrades / เปิด 'ลบ miner ที่แย่สุด' ด้านล่าง / หรือลบเองในเกม",
+					count,
+					cap
+				),
+				Theme.bad
+			)
+			return
+		end
+
+		-- รอเงินซื้อตัวที่ใกล้จะมีเงินพอ
+		if waitingFor then
+			local key = waitingFor.key .. "#" .. tostring(waitingFor.rollId)
+			if waitingKey ~= key then
+				waitingKey, waitingSince = key, os.clock()
+			end
+			local waited = os.clock() - waitingSince
+			if waited < waitMinutes * 60 then
+				-- ตัวที่ขาดใน Index: กันเงินไว้ไม่ให้ Auto Upgrade ใช้
+				if config.autoIndex and not indexed[waitingFor.key] then
+					moneyHold.amount = waitingFor.price
+					moneyHold.label = waitingFor.name .. " (" .. waitingFor.rarity .. ")"
+					moneyHold.expires = os.clock() + 15
+				end
+				rollRow.setStatus(
+					string.format(
+						"เจอ %s (%s) ราคา %s · รอเงินอีกราว %s (ถ้าเกิน %s จะสุ่มต่อ)",
+						waitingFor.name,
+						waitingFor.rarity,
+						fmtCash(waitingFor.price),
+						fmtTime(waitEta * 60),
+						fmtTime(waitMinutes * 60 - waited)
+					),
+					Theme.info
+				)
+				return
+			end
+			skipped[waitingFor.key] = true
+			if waitingPedestal then
+				table.insert(needRoll, waitingPedestal)
+			end
+		else
+			waitingKey = nil
+		end
+
+		local useGame = config.useGameAutoRoll and hasAutoRollAccess() and os.clock() >= autoRollOffUntil
+		if useGame and pAttr("Pass_AutoBuy") == true and pAttr("AutoBuyOn") == false then
+			fire("AutoRoll", "autobuy", true)
+		end
+		if useGame and pAttr("AutoRolling") == true then
+			local status = tostring(pAttr("AutoRollStatus") or "")
+			local trialLeft = num(pAttr("AutoRollTrialEnd")) - now
+			local trialText = if pAttr("Pass_AutoRoll") ~= true and trialLeft > 0 then " · ทดลองฟรีเหลือ " .. fmtTime(trialLeft) else ""
+			rollRow.setStatus("Auto Roll ของเกม: " .. (if status ~= "" then status else "กำลังสุ่ม...") .. trialText)
+			return
+		end
+		if rollingCount > 0 then
+			rollRow.setStatus("กำลังสุ่ม / รอผล...", Theme.sub)
+			return
+		end
+		if #needRoll == 0 then
+			rollRow.setStatus("ไม่มีแท่นที่ต้องสุ่มใหม่", Theme.sub)
+			return
+		end
+
+		-- สุ่มต่อ: ใช้ Auto Roll ของเกมถ้ามีสิทธิ์ (ทดลองฟรี / Game Pass) ไม่งั้นดึงคันโยกเอง
+		local problem: string? = nil
+		if useGame then
+			if os.clock() - autoRollStartedAt < 4 then
+				rollRow.setStatus("กำลังเริ่ม Auto Roll ของเกม...", Theme.sub)
+				return
+			end
+			autoRollStartedAt = os.clock()
+			local names, missing = wantedMinerNames(skipped)
+			if #names > 0 then
+				local ok, why = startGameAutoRoll(names, pedestals)
+				if ok then
+					autoRollFails = 0
+					if os.clock() - lastAutoRollLog > 300 then
+						lastAutoRollLog = os.clock()
+						log("info", string.format("สั่ง Auto Roll ของเกม: หา %d แบบ (ยังไม่มีใน Index %d ตัว)", #names, missing))
+					end
+					local status = tostring(pAttr("AutoRollStatus") or "")
+					rollRow.setStatus(string.format("สั่ง Auto Roll ของเกมแล้ว: หา %d แบบ%s", #names, if status ~= "" then " · " .. status else ""))
+					return
+				end
+				autoRollFails += 1
+				problem = "สั่ง Auto Roll ของเกมแล้วไม่เริ่ม" .. (if why then " (เกมแจ้ง: " .. why .. ")" else "")
+				if autoRollFails >= 3 then
+					autoRollFails = 0
+					autoRollOffUntil = os.clock() + 120
+					log("warn", problem .. " 3 ครั้งติด: เปลี่ยนไปดึงคันโยกเอง 2 นาที")
+				end
+			end
+		end
+
+		if config.pullLever then
+			local ok, why = pullLevers(area, needRoll)
+			if ok then
+				rollRow.setStatus(string.format("ดึงคันโยกสุ่มใหม่ %d แท่น · สุ่มไปแล้ว %d ครั้ง", #needRoll, counters.rolls))
+			else
+				rollRow.setStatus(if problem then problem .. " · " .. tostring(why) else tostring(why), Theme.bad)
+			end
+		else
+			rollRow.setStatus(problem or "ไม่มีตัวที่ต้องการบนแท่น แต่ 'ดึงคันโยกเอง' ปิดอยู่", if problem then Theme.bad else Theme.sub)
+		end
+	end
+	startLoop("Auto Roll", nil, 1, rollRow, rollCycle)
+
+	refreshers.Roll = function()
+		local pedestals = myPedestals()
+		if #pedestals == 0 then
+			pedestalCard.Text = "ไม่พบแท่นสุ่มของแปลงนี้"
+			return
+		end
+		local now = workspace:GetServerTimeNow()
+		local minTier = rarityTier(config.rollMinRarity)
+		local indexed = indexSets()
+		local lines = {}
+		for _, pedestal in pedestals do
+			local info = pedestalResult(pedestal)
+			local line
+			if not info then
+				line = "พร้อมสุ่ม"
+			elseif now < info.revealAt then
+				line = "กำลังสุ่ม..."
+			else
+				line = string.format(
+					"<font color=\"%s\"><b>%s</b></font> %s · %s%s%s",
+					colorHex(rarityColor(info.rarity)),
+					info.rarity,
+					info.name,
+					fmtCash(info.price),
+					if info.mut and info.mut ~= "" then " · " .. tostring(info.mut) else "",
+					if not indexed[info.key] then "  📖 ยังไม่มีใน Index" elseif info.tier >= minTier then "  ✅" else ""
+				)
+			end
+			table.insert(lines, pedestal.Name .. ": " .. line)
+		end
+		local accessText = if hasAutoRollAccess() then "มีสิทธิ์ Auto Roll ของเกม" else "ไม่มีสิทธิ์ Auto Roll ของเกม (ใช้คันโยก)"
+		local bagText = "กระเป๋า miner: กำลังโหลด..."
+		if bag.count and bag.cap then
+			bagText = string.format("กระเป๋า miner %d/%d", bag.count, bag.cap)
+			if bagFull() then
+				bagText = "<font color=\"#F05A5A\">" .. bagText .. " เต็ม!</font>"
+			end
+		end
+		pedestalCard.Text = table.concat(lines, "\n")
+			.. string.format(
+				"\n<font color=\"#949CAE\">%s · %s · ซื้อในรอบนี้ %d ตัว · สุ่ม %d ครั้ง</font>",
+				accessText,
+				bagText,
+				counters.miners,
+				counters.rolls
+			)
+	end
+end
+
+---------------------------------------------------------------------
+-- 14.5) INDEX: สมุดสะสม miner + สัตว์ (หน้าสถานะ + ตั้งค่า งานจริงอยู่ในระบบ Roll / Pets)
+---------------------------------------------------------------------
+do
+	local indexPage = pages.Index
+
+	section(indexPage, "สมุดสะสม (Index)", "สะสมครบแต่ละชุด (miner แต่ละ rarity / สัตว์แต่ละชนิดไข่) ได้โบนัสเงิน +3% ต่อชุด ถาวร")
+	local indexCard = liveCard(indexPage)
+	toggleRow(
+		indexPage,
+		"autoIndex",
+		"Auto Index: miner",
+		"miner ตัวไหนยังไม่มีใน Index ซื้อให้ทันทีที่ขึ้นบนแท่นสุ่ม (แม้ต่ำกว่า rarity ขั้นต่ำในแท็บ Roll) · ถ้ามีสิทธิ์ Auto Roll ของเกม จะสั่งให้เกมสุ่มหาตัวที่ขาดโดยตรง วนไปจนครบ"
+	)
+	stepperRow(indexPage, "indexMaxSpendPct", "ใช้เงินซื้อตัวที่ขาดได้ไม่เกิน", "ต่อตัว เทียบกับเงินที่มี", 10, 100, 10, function(value)
+		return value .. "%"
+	end)
+	toggleRow(
+		indexPage,
+		"indexPets",
+		"Auto Index: สัตว์",
+		"วางไข่และซื้อไข่ชนิดที่ยังมีสัตว์ขาดก่อน (ต้องเปิด Auto Hatch และซื้อไข่อัตโนมัติในแท็บ Pets ด้วย)"
+	)
+	section(
+		indexPage,
+		"ข้อควรรู้",
+		"miner แต่ละ rarity มี 5 ตัว ตัว rarity สูงสุ่มเจอยาก (Exotic ~1%, Celestial ~0.3%) อาจใช้เวลานาน · ตัวที่ขาดแต่เงินยังไม่พอ จะรอเงินได้ถึง 10 นาที (กันเงินไม่ให้ Auto Upgrade ใช้) ถ้านานกว่านั้นจะสุ่มต่อ · ถ้ากระเป๋าเต็มจะซื้อไม่ได้ ให้เปิด Bigger Bag ในแท็บ Upgrades หรือ 'ลบ miner ที่แย่สุด' ในแท็บ Roll · สัตว์ได้จากการฟักไข่เท่านั้น (Pet Shop เปิดที่ Quarry Lv2) ไข่แต่ละชนิดมีสัตว์ 3 ตัว ตัวหายากออก 10%"
+	)
+
+	refreshers.Index = function()
+		local indexed, indexedPets = indexSets()
+		local pool = minerPool()
+		local lines = {}
+		local minersHave, minersTotal, setsDone = 0, 0, 0
+		for _, rarityName in RARITY_NAMES do
+			local names = pool[rarityName]
+			if names and #names > 0 then
+				local have = 0
+				local missingNames = {}
+				for _, name in names do
+					if indexed[name] then
+						have += 1
+					else
+						table.insert(missingNames, minerDisplayName(name))
+					end
+				end
+				minersHave += have
+				minersTotal += #names
+				if have == #names then
+					setsDone += 1
+				end
+				table.insert(
+					lines,
+					string.format(
+						"<font color=\"%s\"><b>%s</b></font> %d/%d%s",
+						colorHex(rarityColor(rarityName)),
+						rarityName,
+						have,
+						#names,
+						if have == #names then "  ✅" else "  · ขาด: " .. table.concat(missingNames, ", ")
+					)
+				)
+			end
+		end
+
+		local petLines = {}
+		local petsHave, petsTotal = 0, 0
+		for _, block in (PetCatalog and PetCatalog.BLOCKS) or {} do
+			local pets = block.pets or {}
+			local have = 0
+			for _, pet in pets do
+				if indexedPets[pet.id] then
+					have += 1
+				end
+			end
+			petsHave += have
+			petsTotal += #pets
+			if #pets > 0 and have == #pets then
+				setsDone += 1
+			end
+			table.insert(petLines, string.format("%s %d/%d%s", block.oreName or block.key, have, #pets, if #pets > 0 and have == #pets then " ✅" else ""))
+		end
+
+		indexCard.Text = string.format(
+			"<b>Miners %d/%d · Pets %d/%d · ครบ %d ชุด = โบนัส +%d%%</b>   (เข้า Index ใหม่ในรอบนี้ %d)\n%s\n\n🐾 <b>สัตว์ (ตามชนิดไข่)</b>\n%s",
+			minersHave,
+			minersTotal,
+			petsHave,
+			petsTotal,
+			setsDone,
+			setsDone * 3,
+			counters.indexNew,
+			if #lines > 0 then table.concat(lines, "\n") else "โหลดรายชื่อ miner ของเกมไม่ได้",
+			if #petLines > 0 then table.concat(petLines, " · ") else "โหลดรายชื่อสัตว์ของเกมไม่ได้"
+		)
+	end
+end
+
+---------------------------------------------------------------------
+-- 15) PETS: ฟักไข่ / วางไข่ / ซื้อไข่ / ปลดล็อกฟาร์ม
+---------------------------------------------------------------------
+do
+	local petPage = pages.Pets
+
+	section(petPage, "ฟาร์มสัตว์", "ฟาร์มเปิดที่ Quarry Lv2 ไข่ซื้อได้ที่ Pet Shop ในเมือง สัตว์ช่วยเพิ่มรายได้")
+	local petCard = liveCard(petPage)
+	local hatchRow = toggleRow(petPage, "autoHatch", "Auto Hatch", "ฟักไข่ที่ครบเวลา แล้ววางไข่ที่ดีที่สุดลงตู้ที่ว่างให้")
+	local eggRow = toggleRow(petPage, "buyEggs", "ซื้อไข่อัตโนมัติ", "ซื้อไข่ระดับสูงสุดที่ปลดล็อกแล้วและมีของในร้าน")
+	stepperRow(petPage, "eggMaxSpendPct", "ใช้เงินซื้อไข่ไม่เกิน", "ต่อฟอง เทียบกับเงินที่มี", 5, 100, 5, function(value)
+		return value .. "%"
+	end)
+	toggleRow(petPage, "petEquipBest", "Equip Best (สัตว์)", "ใส่สัตว์ที่ดีที่สุดให้หลังฟัก และทุก 1 นาที")
+	local farmUnlockRow = toggleRow(petPage, "unlockFarm", "ปลดล็อกฟาร์มให้เอง", "เมื่อ Quarry ถึง Lv2 และมีเงินพอ ($5K)")
+
+	local function incubators(farm: Instance?)
+		local list = {}
+		local folder = farm and farm:FindFirstChild("Incubators")
+		if folder then
+			for _, model in folder:GetChildren() do
+				local base = model:FindFirstChild("Incubator")
+				if base and base:IsA("BasePart") then
+					table.insert(list, {
+						base = base,
+						index = base:GetAttribute("Index"),
+						egg = base:GetAttribute("Egg") or "",
+						doneAt = num(base:GetAttribute("DoneAt")),
+					})
+				end
+			end
+		end
+		return list
+	end
+
+	-- ไข่ชนิดนี้ยังมีสัตว์ที่ไม่มีใน Index ไหม
+	local function eggHasMissingPet(eggKey: string, indexedPets: { [string]: boolean }): boolean
+		local def = PetCatalog and PetCatalog.BY_KEY and PetCatalog.BY_KEY[eggKey]
+		if not (def and def.pets) then
+			return false
+		end
+		for _, pet in def.pets do
+			if not indexedPets[pet.id] then
+				return true
+			end
+		end
+		return false
+	end
+
+	-- ไข่ที่มี: attribute Eggs = {ชื่อไข่: จำนวน} เลือกไข่ที่ยังมีสัตว์ขาดใน Index ก่อน แล้วค่อยระดับสูงสุด
+	local function bestOwnedEgg(): string?
+		local _, indexedPets = indexSets()
+		local best, bestScore = nil, -1
+		for key, value in decode(pAttr("Eggs")) do
+			local eggKey, count = key, value
+			if type(value) == "string" then
+				eggKey, count = value, 1
+			end
+			if type(eggKey) == "string" and num(count) > 0 then
+				local def = PetCatalog and PetCatalog.BY_KEY and PetCatalog.BY_KEY[eggKey]
+				local score = (def and def.tier) or 0
+				if config.indexPets and eggHasMissingPet(eggKey, indexedPets) then
+					score += 100
+				end
+				if score > bestScore then
+					best, bestScore = eggKey, score
+				end
+			end
+		end
+		return best
+	end
+
+	local function petName(id: any): string
+		local def = PetCatalog and PetCatalog.BY_ID and PetCatalog.BY_ID[id]
+		return (def and def.name) or tostring(id)
+	end
+
+	local function hatchCycle()
+		local farm = myFarm()
+		if not farm then
+			hatchRow.setStatus("ยังไม่มีฟาร์ม (เปิดที่ Quarry Lv2)", Theme.sub)
+			return
+		end
+		local now = workspace:GetServerTimeNow()
+		local list = incubators(farm)
+		if #list == 0 then
+			hatchRow.setStatus("ยังไม่มีตู้ฟักไข่", Theme.sub)
+			return
+		end
+		local _, indexedPets = indexSets()
+		local busy, empty = 0, 0
+		for _, incubator in list do
+			if incubator.egg ~= "" and incubator.doneAt <= now then
+				local ok, result = invoke("FarmHatch", 8, incubator.index)
+				if not (ok and type(result) == "table" and result.ok) then
+					withHops("Pets: ฟักไข่", function(hopTo)
+						hopTo(CFrame.new(incubator.base.Position + Vector3.new(0, 4, 0)))
+						ok, result = invoke("FarmHatch", 8, incubator.index)
+					end)
+				end
+				if ok and type(result) == "table" and result.ok then
+					counters.hatched += 1
+					local isNew = not indexedPets[result.pet]
+					if isNew then
+						counters.indexNew += 1
+					end
+					local newText = if isNew then "  📖 ใหม่ใน Index" else ""
+					log("good", "ฟักไข่ได้ " .. petName(result.pet) .. newText)
+					toast("🐣 ฟักได้ " .. petName(result.pet) .. newText, Theme.good)
+					if config.petEquipBest then
+						task.delay(1, function()
+							fire("BagAction", "petEquipBest")
+						end)
+					end
+				end
+			elseif incubator.egg == "" then
+				empty += 1
+				local egg = bestOwnedEgg()
+				local coolKey = "place" .. tostring(incubator.index)
+				if egg and not cooling(coolKey) then
+					fire("FarmAction", "place", incubator.index, egg)
+					local placed = waitFor(function()
+						return (incubator.base:GetAttribute("Egg") or "") ~= ""
+					end, 1)
+					if not placed then
+						withHops("Pets: วางไข่", function(hopTo)
+							hopTo(CFrame.new(incubator.base.Position + Vector3.new(0, 4, 0)))
+							fire("FarmAction", "place", incubator.index, egg)
+							placed = waitFor(function()
+								return (incubator.base:GetAttribute("Egg") or "") ~= ""
+							end, 1.2)
+						end)
+					end
+					if placed then
+						log("info", "วางไข่ " .. egg .. " ในตู้ " .. tostring(incubator.index))
+					else
+						cool(coolKey, 30)
+					end
+				end
+			else
+				busy += 1
+			end
+		end
+		hatchRow.setStatus(string.format("ตู้ฟัก %d ตู้ · กำลังฟัก %d · ว่าง %d · ฟักไปแล้ว %d ตัว", #list, busy, empty, counters.hatched))
+	end
+	startLoop("Auto Hatch", "autoHatch", 3, hatchRow, hatchCycle)
+
+	startLoop("Unlock Farm", "unlockFarm", 15, farmUnlockRow, function()
+		local farm = myFarm()
+		if not farm then
+			return
+		end
+		-- ฟาร์มที่ยังไม่ได้ซื้อจะมีป้าย ForSale อยู่
+		if farm:FindFirstChild("ForSale", true) == nil then
+			farmUnlockRow.setStatus("ปลดล็อกฟาร์มแล้ว", Theme.good)
+			return
+		end
+		local price = (PetFarm and PetFarm.UNLOCK_PRICE) or 5000
+		if num(pAttr("QuarryLevel")) < 2 then
+			farmUnlockRow.setStatus("ต้องการ Quarry Lv2 ก่อน", Theme.sub)
+		elseif cash() < price then
+			farmUnlockRow.setStatus("รอเงิน " .. fmtCash(price), Theme.sub)
+		elseif not cooling("unlockFarm") then
+			cool("unlockFarm", 60)
+			fire("FarmAction", "unlock")
+			if waitFor(function()
+				return farm:FindFirstChild("ForSale", true) == nil
+			end, 3) then
+				log("buy", "ปลดล็อกฟาร์มสัตว์ (" .. fmtCash(price) .. ")")
+				toast("🐾 ปลดล็อกฟาร์มสัตว์แล้ว", Theme.good)
+			else
+				farmUnlockRow.setStatus("ส่งคำขอปลดล็อกแล้วแต่ยังไม่เปลี่ยน จะลองใหม่ใน 1 นาที", Theme.bad)
+			end
+		end
+	end)
+
+	startLoop("Buy Eggs", "buyEggs", 12, eggRow, function()
+		if not PetCatalog then
+			eggRow.setStatus("โหลดข้อมูลไข่ของเกมไม่ได้", Theme.bad)
+			return
+		end
+		local quarry = num(pAttr("QuarryLevel"))
+		if quarry < 2 then
+			eggRow.setStatus("Pet Shop เปิดที่ Quarry Lv2", Theme.sub)
+			return
+		end
+		if num(pAttr("EggCount")) >= num(pAttr("EggCap"), PetCatalog.EGG_CAP or 50) then
+			eggRow.setStatus("ช่องเก็บไข่เต็ม", Theme.sub)
+			return
+		end
+		local shop = hubProp("PetShop")
+		if not shop then
+			return
+		end
+		local stock = decode(shop:GetAttribute("PetStock"))
+		local money = cash()
+		local _, indexedPets = indexSets()
+		local best = nil
+		for _, block in PetCatalog.BLOCKS or {} do
+			local entry = stock[block.key]
+			local left = if type(entry) == "table" then num(entry[1]) else 0
+			if left > 0 and PetCatalog.unlocked(block.key, quarry) then
+				local price = PetCatalog.price(block.key)
+				-- ไข่ที่ยังมีสัตว์ขาดใน Index มาก่อน (เลือกถูกสุด จะได้ฟักได้หลายรอบ) ไม่งั้นเอาระดับสูงสุด
+				local forIndex = config.indexPets and eggHasMissingPet(block.key, indexedPets)
+				local score = if forIndex then 1000 - block.tier else block.tier
+				if price <= money * config.eggMaxSpendPct / 100 and (not best or score > best.score) then
+					best = { key = block.key, tier = block.tier, price = price, name = block.name, score = score, forIndex = forIndex }
+				end
+			end
+		end
+		if not best then
+			eggRow.setStatus("ไม่มีไข่ที่ซื้อได้ตอนนี้ (หมด / แพงเกินที่ตั้งไว้)", Theme.sub)
+			return
+		end
+		withHops("Pets: ซื้อ " .. best.name, function(hopTo)
+			hopTo(hubSpot("PetShop", "OpenPetShop"))
+			local ok, result = invoke("PetShopBuy", 8, best.key)
+			if ok and type(result) == "table" and result.ok then
+				counters.eggsBought += 1
+				log("buy", string.format("ซื้อ %s (%s)%s", best.name, fmtCash(best.price), if best.forIndex then " เพื่อ Index" else ""))
+				eggRow.setStatus("ซื้อ " .. best.name .. " · " .. os.date("%H:%M:%S"), Theme.good)
+			end
+		end)
+	end)
+
+	refreshers.Pets = function()
+		local eggs = {}
+		for key, value in decode(pAttr("Eggs")) do
+			if type(key) == "string" and num(value) > 0 then
+				table.insert(eggs, key .. " x" .. math.floor(num(value)))
+			end
+		end
+		local lines = {
+			string.format("🥚 ไข่ในกระเป๋า: %s (%d/%d)", if #eggs > 0 then table.concat(eggs, ", ") else "ไม่มี", num(pAttr("EggCount")), num(pAttr("EggCap"), 50)),
+			string.format("🐾 สัตว์: %d/%d · ตัวคูณสัตว์ x%s", num(pAttr("PetCount")), num(pAttr("PetCap"), 50), tostring(pAttr("PetMult") or 1)),
+		}
+		local farm = myFarm()
+		if farm then
+			local now = workspace:GetServerTimeNow()
+			for _, incubator in incubators(farm) do
+				local state
+				if incubator.egg == "" then
+					state = "ว่าง"
+				elseif incubator.doneAt <= now then
+					state = incubator.egg .. " ฟักได้แล้ว"
+				else
+					state = incubator.egg .. " อีก " .. fmtTime(incubator.doneAt - now)
+				end
+				table.insert(lines, "ตู้ " .. tostring(incubator.index) .. ": " .. state)
+			end
+		else
+			table.insert(lines, "ยังไม่มีฟาร์ม (Quarry Lv2)")
+		end
+		petCard.Text = table.concat(lines, "\n")
+	end
+end
+
+---------------------------------------------------------------------
+-- 16) REWARDS: Daily / Quest / Spin / Group / ยา / ร้านทั่วไป / กล่อง Robux
+---------------------------------------------------------------------
+do
+	local rewardPage = pages.Rewards
+
+	section(rewardPage, "รางวัล", "รับของฟรีทุกอย่างที่เกมให้ ร้านในเมืองต้องวาปไป สคริปต์จะไปแล้วกลับให้เอง")
+	local questCard = liveCard(rewardPage)
+	local dailyRow = toggleRow(rewardPage, "daily", "Daily Reward", "รับรางวัลรายวันเมื่อพร้อม")
+	local questRow = toggleRow(rewardPage, "quests", "Quests", "รับรางวัลเควสที่ทำครบ + โบนัสเมื่อครบทุกเควส (วาปไป Quest Giver)")
+	local spinRow = toggleRow(rewardPage, "spin", "Lucky Spin", "หมุนฟรีวันละครั้ง + ใช้ตั๋วหมุนที่มี (วาปไปวงล้อ)")
+	local groupRow = toggleRow(rewardPage, "groupReward", "Group Reward", "กดรับรางวัลกลุ่ม (ต้องอยู่ในกลุ่มเกมแล้ว)")
+	local rxRow = toggleRow(rewardPage, "openRx", "เปิดกล่อง/ไข่ Robux ที่มีอยู่", "ถ้ามี Robux Crate / Robux Egg ในกระเป๋า (เช่นจากรางวัล) จะเปิดให้")
+
+	section(rewardPage, "ยา (Potions)")
+	local drinkRow = toggleRow(rewardPage, "drinkPotions", "ดื่มยาอัตโนมัติ", "Money → Luck → Mining ดื่มต่อทันทีเมื่อหมดเวลา (ใช้ขวดใหญ่ก่อน)")
+	toggleRow(rewardPage, "drinkSpeed", "ดื่มยา Speed ด้วย", "ไม่ช่วยตอน AFK")
+	local potionBuyRow = toggleRow(
+		rewardPage,
+		"buyPotions",
+		"ซื้อยาด้วยเงินในเกม",
+		"ร้านยา (เปิดที่ Pyramid Lv3) ขายด้วยเงินในเกมเมื่อมีของ ยา Money x2 คุ้มเสมอ: จ่าย 2 นาทีของรายได้ ได้ x2 นาน 5 นาที"
+	)
+	stepperRow(rewardPage, "potionMaxSpendPct", "ใช้เงินซื้อยาไม่เกิน", "ต่อขวด เทียบกับเงินที่มี", 5, 100, 5, function(value)
+		return value .. "%"
+	end)
+	local storeRow = toggleRow(rewardPage, "storePotions", "Mystery / Rare Potion (General Store)", "ร้านทั่วไปขายวันละ 3 ขวดต่ออย่าง ราคาถูก")
+	toggleRow(rewardPage, "spinTickets", "ซื้อตั๋วหมุนด้วยเงินในเกม", "ราคาขึ้นตามรายได้ ปิดไว้เพื่อประหยัดเงิน")
+
+	local groupDone = false
+	local lastSpinAt = 0
+	local lastRxAt = 0
+	local lastStoreAt = 0
+
+	local function questData()
+		local data = decode(pAttr("Quests"))
+		return data, (type(data.list) == "table" and data.list) or {}
+	end
+
+	local function potionTypes(): { string }
+		local types = { "Money", "Luck", "Mining" }
+		if config.drinkSpeed then
+			table.insert(types, "Speed")
+		end
+		return types
+	end
+
+	local function claimDaily()
+		if pAttr("DailyReady") ~= true then
+			dailyRow.setStatus("รับแล้ววันนี้ · พรุ่งนี้มาใหม่", Theme.sub)
+			return
+		end
+		if cooling("daily") then
+			return
+		end
+		cool("daily", 20)
+		local day = num(pAttr("DailyDay"), 1)
+		local ok = invoke("DailyClaim", 10)
+		if ok and pAttr("DailyReady") ~= true then
+			log("good", "รับ Daily Reward วันที่ " .. day)
+			toast("🎁 รับ Daily วันที่ " .. day, Theme.good)
+			dailyRow.setStatus("รับวันที่ " .. day .. " แล้ว", Theme.good)
+		end
+	end
+
+	local function claimGroup()
+		groupDone = true
+		if pAttr("InGroup") == true then
+			fire("GroupReward", "check")
+			task.wait(1.5)
+			fire("GroupReward", "claim")
+			groupRow.setStatus("ส่งคำขอรับรางวัลกลุ่มแล้ว", Theme.good)
+		else
+			groupRow.setStatus("ยังไม่ได้อยู่ในกลุ่มเกม", Theme.sub)
+		end
+	end
+
+	local function claimQuests()
+		local data, list = questData()
+		local claimable, unclaimed = {}, 0
+		for index, quest in ipairs(list) do
+			if not quest.claimed then
+				unclaimed += 1
+				if num(quest.prog) >= num(quest.goal, math.huge) then
+					table.insert(claimable, index)
+				end
+			end
+		end
+		local needBonus = #list > 0 and unclaimed == 0 and not data.bonus
+		local bonusAfter = #claimable > 0 and #claimable == unclaimed and not data.bonus
+		if #claimable == 0 and not needBonus then
+			return
+		end
+		cool("quests", 15)
+		withHops("Rewards: รับเควส", function(hopTo)
+			hopTo(hubSpot("QuestShop", "OpenQuests"))
+			for _, index in claimable do
+				fire("QuestAction", "claim", index)
+				task.wait(0.4)
+			end
+			if needBonus or bonusAfter then
+				task.wait(0.5)
+				fire("QuestAction", "bonus")
+			end
+			task.wait(0.4)
+		end)
+		local _, after = questData()
+		local claimedNow = 0
+		for _, index in claimable do
+			if after[index] and after[index].claimed then
+				claimedNow += 1
+			end
+		end
+		if claimedNow > 0 then
+			counters.quests += claimedNow
+			log("good", "รับรางวัลเควส " .. claimedNow .. " อัน")
+			toast("📜 รับรางวัลเควส " .. claimedNow .. " อัน", Theme.good)
+		end
+		questRow.setStatus(string.format("รับไปแล้ว %d อันในรอบนี้", counters.quests), Theme.good)
+	end
+
+	-- Lucky Spin: ฟรีวันละครั้ง + ตั๋ว (เช็คว่าหมุนจริงจาก attribute ก่อนนับ)
+	local function doSpin()
+		local now = workspace:GetServerTimeNow()
+		local freeDay = num(pAttr("SpinFreeDay"))
+		local free = SpinWheel ~= nil and freeDay < SpinWheel.day(now)
+		local tickets = num(pAttr("SpinTickets"))
+		if not free and tickets <= 0 then
+			spinRow.setStatus("หมุนฟรีวันนี้แล้ว · ไม่มีตั๋ว", Theme.sub)
+			return
+		end
+		local useTen = not free and tickets >= 10
+		local spun = false
+		withHops("Rewards: หมุนวงล้อ", function(hopTo)
+			hopTo(hubSpot("LuckySpin", "OpenSpin"))
+			fire("SpinAction", if useTen then "spin10" else "spin")
+			spun = waitFor(function()
+				return num(pAttr("SpinFreeDay")) ~= freeDay or num(pAttr("SpinTickets")) ~= tickets
+			end, 2.5)
+		end)
+		lastSpinAt = os.clock()
+		if spun then
+			local used = if useTen then 10 else 1
+			counters.spins += if free then 1 else used
+			log("good", if free then "หมุนวงล้อฟรีประจำวัน" else string.format("ใช้ตั๋วหมุน %d ใบ", used))
+			spinRow.setStatus(string.format("หมุนไปแล้ว %d ครั้ง · ตั๋วเหลือ %d", counters.spins, num(pAttr("SpinTickets"))), Theme.good)
+		else
+			cool("spin", 60)
+			spinRow.setStatus("หมุนไม่สำเร็จ จะลองใหม่ใน 1 นาที", Theme.bad)
+		end
+	end
+
+	-- ดื่มยา: inv = {id: จำนวน}, active = {ชนิด: เวลาหมด (unix)}
+	local function drinkPotions()
+		local potionData = decode(pAttr("Potions"))
+		local inv = (type(potionData.inv) == "table" and potionData.inv) or {}
+		local active = (type(potionData.active) == "table" and potionData.active) or {}
+		local nowUnix = os.time()
+		local types = potionTypes()
+		local activeText = {}
+		for _, potionType in types do
+			local left = num(active[potionType]) - nowUnix
+			if left > 0 then
+				table.insert(activeText, potionType .. " " .. fmtTime(left))
+			end
+		end
+		for _, potionType in types do
+			if num(active[potionType]) - nowUnix < 15 then
+				local pick = nil
+				for _, size in { "Mega", "Big", "Small" } do
+					if num(inv[potionType .. "_" .. size]) > 0 then
+						pick = potionType .. "_" .. size
+						break
+					end
+				end
+				if not pick and num(inv.Super) > 0 then
+					pick = "Super"
+				end
+				if pick and not cooling("drink" .. pick) then
+					cool("drink" .. pick, 10)
+					fire("PotionAction", "drink", pick)
+					counters.potions += 1
+					local def = Potions.BY_ID and Potions.BY_ID[pick]
+					log("good", "ดื่ม " .. ((def and def.name) or pick))
+					return
+				end
+			end
+		end
+		drinkRow.setStatus(if #activeText > 0 then "ทำงานอยู่: " .. table.concat(activeText, " · ") else "ไม่มียาที่ทำงานอยู่ / ไม่มียาในกระเป๋า", Theme.sub)
+	end
+
+	-- ซื้อยาด้วยเงินในเกมที่ร้านยาในเมือง (มีไว้ไม่เกิน 2 ขวดต่อชนิด)
+	local function buyPotions()
+		local shop = hubProp("PotionShop")
+		if num(pAttr("PyramidLevel")) < 3 then
+			potionBuyRow.setStatus("ร้านยาเปิดที่ Pyramid Lv3 (Expand the Mine)", Theme.sub)
+			return
+		end
+		if not shop then
+			return
+		end
+		local stock = decode(shop:GetAttribute("PotionStock"))
+		local inv = decode(pAttr("Potions")).inv or {}
+		local income = num(pAttr("IncomePerMin"), 30)
+		local budget = cash()
+		local wanted = {}
+		for _, potionType in potionTypes() do
+			local owned = 0
+			for _, size in { "Small", "Big", "Mega" } do
+				owned += num(inv[potionType .. "_" .. size])
+			end
+			if owned < 2 then
+				for _, size in { "Mega", "Big", "Small" } do
+					local id = potionType .. "_" .. size
+					local entry = stock[id]
+					local left = if type(entry) == "table" then num(entry[1]) else 0
+					local item = Potions.BY_ID[id]
+					if left > 0 and item then
+						local ok, price = pcall(Potions.price, item, income, false)
+						if ok and type(price) == "number" and price <= budget * config.potionMaxSpendPct / 100 then
+							table.insert(wanted, { id = id, price = price, name = item.name })
+							budget -= price
+							break
+						end
+					end
+				end
+			end
+		end
+		if #wanted == 0 then
+			potionBuyRow.setStatus("ไม่มียาที่ต้องซื้อตอนนี้ (มีพอแล้ว / ร้านหมด)", Theme.sub)
+			return
+		end
+		cool("buyPotions", 20)
+		withHops("Rewards: ซื้อยา", function(hopTo)
+			hopTo(hubSpot("PotionShop", "OpenPotions"))
+			for _, potion in wanted do
+				fire("PotionAction", "buy", potion.id)
+				task.wait(0.4)
+			end
+			task.wait(0.6)
+		end)
+		local after = decode(pAttr("Potions")).inv or {}
+		local bought = 0
+		for _, potion in wanted do
+			if num(after[potion.id]) > num(inv[potion.id]) then
+				bought += 1
+				log("buy", string.format("ซื้อ %s (%s)", potion.name, fmtCash(potion.price)))
+			end
+		end
+		if bought > 0 then
+			potionBuyRow.setStatus(string.format("ซื้อยา %d ขวด · %s", bought, os.date("%H:%M:%S")), Theme.good)
+		else
+			cool("buyPotions", 120)
+			potionBuyRow.setStatus("ซื้อไม่สำเร็จ (ร้านอาจหมดก่อน) จะลองใหม่ใน 2 นาที", Theme.bad)
+		end
+	end
+
+	-- General Store: Mystery / Rare Potion วันละ 3 + ตั๋วหมุน
+	local function storeBuys()
+		lastStoreAt = os.clock()
+		local today = math.floor(os.time() / 86400)
+		local function boughtToday(id: string): number
+			local dayData = decode(pAttr("StoreDay"))
+			return if dayData.day == today then num(dayData[id]) else 0
+		end
+		local income = num(pAttr("IncomePerMin"), 30)
+		local budget = cash()
+		local items = {}
+		if config.storePotions and num(pAttr("PyramidLevel")) >= 3 then
+			for _, id in { "MysteryPotion", "RarePotion" } do
+				local item = GeneralStore.BY_ID[id]
+				if item and boughtToday(id) < num(item.daily) then
+					local ok, price = pcall(GeneralStore.price, item, 0, income)
+					if ok and type(price) == "number" and price <= budget * 0.25 then
+						table.insert(items, { id = id, name = item.name, price = price, before = boughtToday(id) })
+						budget -= price
+					end
+				end
+			end
+		end
+		if config.spinTickets then
+			local item = GeneralStore.BY_ID.SpinTicket
+			if item then
+				local ok, price = pcall(GeneralStore.price, item, 0, income)
+				if ok and type(price) == "number" and price <= budget * 0.15 then
+					table.insert(items, { id = "SpinTicket", name = item.name, price = price, before = num(pAttr("SpinTickets")) })
+				end
+			end
+		end
+		if #items == 0 then
+			return
+		end
+		withHops("Rewards: ร้านทั่วไป", function(hopTo)
+			hopTo(hubSpot("GeneralShop", "OpenStore"))
+			for _, item in items do
+				fire("StoreAction", "buy", item.id)
+				task.wait(0.4)
+			end
+			task.wait(0.6)
+		end)
+		local bought = 0
+		for _, item in items do
+			local now = if item.id == "SpinTicket" then num(pAttr("SpinTickets")) else boughtToday(item.id)
+			if now > item.before then
+				bought += 1
+				log("buy", string.format("ซื้อ %s (%s)", item.name, fmtCash(item.price)))
+			end
+		end
+		storeRow.setStatus(
+			if bought > 0 then string.format("ซื้อ %d อย่าง · %s", bought, os.date("%H:%M:%S")) else "ส่งคำสั่งซื้อแล้วแต่ของไม่เพิ่ม",
+			if bought > 0 then Theme.good else Theme.bad
+		)
+	end
+
+	-- เปิดกล่อง / ไข่ Robux ที่มีอยู่
+	local function openRx()
+		lastRxAt = os.clock()
+		for _, kind in { "crate", "egg" } do
+			if (pAttr("HeldRx") or "") ~= kind then
+				fire("BagAction", "holdRx", kind)
+			end
+			if waitFor(function()
+				return pAttr("HeldRx") == kind
+			end, 1.2) then
+				task.wait(0.4)
+				fire("BagAction", "openRx")
+				log("good", "เปิด Robux " .. kind)
+				rxRow.setStatus("เปิด Robux " .. kind .. " · " .. os.date("%H:%M:%S"), Theme.good)
+				return
+			end
+		end
+	end
+
+	startLoop("Rewards", nil, 4, nil, function()
+		if config.daily then
+			claimDaily()
+		end
+		if config.groupReward and not groupDone then
+			claimGroup()
+		end
+		if config.quests and not cooling("quests") then
+			claimQuests()
+		end
+		if config.spin and os.clock() - lastSpinAt > SPIN_TIME + 2 and not cooling("spin") then
+			doSpin()
+		end
+		if config.drinkPotions and Potions then
+			drinkPotions()
+		end
+		if config.buyPotions and Potions and Potions.BY_ID and not cooling("buyPotions") then
+			buyPotions()
+		end
+		if GeneralStore and GeneralStore.BY_ID and (config.storePotions or config.spinTickets) and os.clock() - lastStoreAt > 60 then
+			storeBuys()
+		end
+		if config.openRx and os.clock() - lastRxAt > 20 then
+			openRx()
+		end
+	end)
+
+	refreshers.Rewards = function()
+		local data, list = questData()
+		local lines = {}
+		for _, quest in ipairs(list) do
+			local mark = if quest.claimed then "✅" elseif num(quest.prog) >= num(quest.goal, math.huge) then "🎁" else "⏳"
+			local progress = (fmtCash(quest.prog):gsub("^%$", ""))
+			local goal = (fmtCash(quest.goal):gsub("^%$", ""))
+			table.insert(lines, string.format("%s %s  %s/%s", mark, tostring(quest.text or quest.key), progress, goal))
+		end
+		if #lines == 0 then
+			table.insert(lines, "ยังไม่มีข้อมูลเควส")
+		end
+		if data.bonus then
+			table.insert(lines, "โบนัสเควสวันนี้รับแล้ว")
+		end
+		local free = SpinWheel ~= nil and num(pAttr("SpinFreeDay")) < SpinWheel.day(workspace:GetServerTimeNow())
+		table.insert(
+			lines,
+			string.format(
+				"🎡 Lucky Spin: %s · ตั๋ว %d   🗓 Daily: %s",
+				if free then "หมุนฟรีได้" else "หมุนฟรีแล้ว",
+				num(pAttr("SpinTickets")),
+				if pAttr("DailyReady") == true then "รับได้" else "รับแล้ว"
+			)
+		)
+		questCard.Text = table.concat(lines, "\n")
+	end
+end
+
+-- Equip Best ทุก 1 นาที (miner + สัตว์)
+startLoop("Equip Best", nil, 60, nil, function()
+	if config.equipBest then
+		fire("BagAction", "equipBest")
+	end
+	if config.petEquipBest then
+		task.wait(0.5)
+		fire("BagAction", "petEquipBest")
+	end
+end)
+
+---------------------------------------------------------------------
+-- 17) MISC: Anti-AFK / Rejoin / ประหยัดเครื่อง / วาป / Spectate
+---------------------------------------------------------------------
+do
+	local miscPage = pages.Misc
+
+	local function applyLowGfx(on: boolean)
+		pcall(function()
+			RunService:Set3dRenderingEnabled(not on)
+		end)
+		if typeof(setfpscap) == "function" then
+			pcall(setfpscap, if on then 15 else 240)
+		end
+	end
+
+	section(miscPage, "AFK")
+	local afkRow = toggleRow(miscPage, "antiAfk", "Anti-AFK", "กันโดนเตะออกเพราะไม่ได้ขยับ 20 นาที")
+	local rejoinRow = toggleRow(
+		miscPage,
+		"autoRejoin",
+		"Auto Rejoin",
+		"หลุด/โดนเตะ แล้วเข้าเกมใหม่เอง · ให้สคริปต์รันต่อเอง: เซฟไฟล์นี้ชื่อ BackSoyer.lua ใน workspace ของ Volt หรือใส่ใน autoexec"
+	)
+	toggleRow(miscPage, "lowGfx", "โหมดประหยัดเครื่อง", "ปิดภาพ 3D + จำกัด FPS ตอน AFK (หน้าจอจะว่าง แต่สคริปต์ทำงานปกติ)", applyLowGfx)
+	toggleRow(miscPage, "toasts", "แจ้งเตือนมุมจอ", "เด้งบอกตอนได้ miner / ฟักไข่ / อัพเกรดใหญ่ ฯลฯ")
+	cycleRow(miscPage, "uiKey", "ปุ่มซ่อน/แสดงหน้าต่าง", nil, { "RightControl", "RightShift", "Insert", "Home", "F6" })
+
+	section(miscPage, "วาป")
+	buttonRow(miscPage, {
+		{
+			label = "🏠 กลับบ้าน (Home)",
+			callback = function()
+				fire("WarpRequest", "home")
+			end,
+		},
+		{
+			label = "🏙 ไปเมือง (Town)",
+			callback = function()
+				fire("WarpRequest", "town")
+			end,
+		},
+	})
+
+	-- Spectate: แถบควบคุมด้านล่างจอ
+	section(miscPage, "Spectate", "ดูผู้เล่นคนอื่น: < > หรือ Q / E สลับคน · TP หรือ T วาปไปหา · X กลับมาที่ตัวเอง")
+	local specPanel = new("Frame", {
+		Name = "SpectatePanel",
+		AnchorPoint = Vector2.new(0.5, 1),
+		Size = UDim2.fromOffset(476, 64),
+		Position = UDim2.new(0.5, 0, 1, -20),
+		BackgroundColor3 = Theme.bg,
+		Visible = false,
+		Parent = gui,
+	}, { corner(14), stroke(Theme.accent, 2) })
+	local prevButton = button({ Text = "<", TextSize = 20, Size = UDim2.fromOffset(48, 48), Position = UDim2.fromOffset(8, 8), BackgroundColor3 = Theme.accent, TextColor3 = Theme.bg, Parent = specPanel })
+	local tpButton = button({ Text = "TP", TextSize = 18, Size = UDim2.fromOffset(48, 48), Position = UDim2.new(1, -168, 0, 8), BackgroundColor3 = Theme.info, Parent = specPanel })
+	local nextButton = button({ Text = ">", TextSize = 20, Size = UDim2.fromOffset(48, 48), Position = UDim2.new(1, -112, 0, 8), BackgroundColor3 = Theme.accent, TextColor3 = Theme.bg, Parent = specPanel })
+	local specClose = button({ Text = "X", TextSize = 18, Size = UDim2.fromOffset(48, 48), Position = UDim2.new(1, -56, 0, 8), BackgroundColor3 = Theme.bad, Parent = specPanel })
+	local avatar = new("ImageLabel", { Size = UDim2.fromOffset(48, 48), Position = UDim2.fromOffset(64, 8), BackgroundColor3 = Theme.panel2, Parent = specPanel }, { corner(24) })
+	local specName = text({ Font = FONT_BOLD, TextSize = 17, TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, -296, 0, 26), Position = UDim2.fromOffset(120, 8), Parent = specPanel })
+	local specSub = text({ TextSize = 13, TextColor3 = Theme.sub, TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, -296, 0, 20), Position = UDim2.fromOffset(120, 34), Parent = specPanel })
+
+	local spectating = false
+	local specTarget: Player? = nil
+	local specCharConn: RBXScriptConnection? = nil
+
+	local function specTargets(): { Player }
+		local list = {}
+		for _, player in Players:GetPlayers() do
+			if player ~= localPlayer then
+				table.insert(list, player)
+			end
+		end
+		table.sort(list, function(a, b)
+			return a.Name:lower() < b.Name:lower()
+		end)
+		return list
+	end
+
+	local function applySpecCamera()
+		local camera = workspace.CurrentCamera
+		local humanoid = getHumanoid(if spectating and specTarget then specTarget else localPlayer)
+		if camera and humanoid then
+			camera.CameraType = Enum.CameraType.Custom
+			camera.CameraSubject = humanoid
+		end
+	end
+
+	local function updateSpecLabels()
+		if not specTarget then
+			specName.Text = "ไม่มีผู้เล่นอื่น"
+			specSub.Text = ""
+			avatar.Image = ""
+			return
+		end
+		local list = specTargets()
+		specName.Text = specTarget.DisplayName
+		specSub.Text = string.format("@%s  •  %d/%d", specTarget.Name, table.find(list, specTarget) or 0, #list)
+		local watched = specTarget
+		task.spawn(function()
+			local ok, image = pcall(function()
+				return Players:GetUserThumbnailAsync(watched.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+			end)
+			if ok and specTarget == watched then
+				avatar.Image = image
+			end
+		end)
+	end
+
+	local function setSpecTarget(player: Player?)
+		if specCharConn then
+			specCharConn:Disconnect()
+			specCharConn = nil
+		end
+		specTarget = player
+		if player then
+			specCharConn = player.CharacterAdded:Connect(function(character)
+				character:WaitForChild("Humanoid", 5)
+				applySpecCamera()
+			end)
+		end
+		updateSpecLabels()
+		applySpecCamera()
+	end
+
+	local specSwitch = nil
+	local function setSpectate(on: boolean)
+		spectating = on
+		specPanel.Visible = on
+		if specSwitch and specSwitch.value ~= on then
+			specSwitch.set(on, true)
+		end
+		setSpecTarget(if on then specTargets()[1] else nil)
+	end
+	specSwitch = plainToggle(miscPage, "Spectate", "แถบควบคุมจะอยู่ด้านล่างจอ", setSpectate)
+
+	local function stepSpec(direction: number)
+		if not spectating then
+			return
+		end
+		local list = specTargets()
+		if #list == 0 then
+			setSpecTarget(nil)
+			return
+		end
+		local index = (specTarget and table.find(list, specTarget)) or (if direction > 0 then 0 else 1)
+		setSpecTarget(list[(index - 1 + direction) % #list + 1])
+	end
+
+	local function teleportToSpec()
+		if not (spectating and specTarget) then
+			return
+		end
+		local targetCharacter = specTarget.Character
+		local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+		if not (getRoot() and targetRoot) then
+			specSub.Text = "วาปไม่ได้: ไม่พบตัวละคร"
+			return
+		end
+		moveTo((targetRoot :: BasePart).CFrame * CFrame.new(0, 0, 3))
+		setSpectate(false)
+	end
+
+	connect(prevButton.Activated, function()
+		stepSpec(-1)
+	end)
+	connect(nextButton.Activated, function()
+		stepSpec(1)
+	end)
+	connect(tpButton.Activated, teleportToSpec)
+	connect(specClose.Activated, function()
+		setSpectate(false)
+	end)
+	connect(Players.PlayerRemoving, function(player)
+		if player == specTarget then
+			task.defer(stepSpec, 1)
+		elseif spectating then
+			task.defer(updateSpecLabels)
+		end
+	end)
+	connect(localPlayer.CharacterAdded, function(character)
+		character:WaitForChild("Humanoid", 5)
+		task.wait(0.1)
+		if spectating then
+			applySpecCamera()
+		end
+	end)
+	connect(UserInputService.InputBegan, function(input, gameProcessed)
+		if gameProcessed or not spectating then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.Q then
+			stepSpec(-1)
+		elseif input.KeyCode == Enum.KeyCode.E then
+			stepSpec(1)
+		elseif input.KeyCode == Enum.KeyCode.T then
+			teleportToSpec()
+		end
+	end)
+
+	-- Anti-AFK: จำลองการกดเมาส์ตอนเกมจะเตะเพราะไม่ขยับ
+	local virtualUser = nil
+	pcall(function()
+		virtualUser = game:GetService("VirtualUser")
+	end)
+	connect(localPlayer.Idled, function()
+		if not config.antiAfk or not virtualUser then
+			return
+		end
+		pcall(function()
+			virtualUser:CaptureController()
+			virtualUser:ClickButton2(Vector2.new())
+		end)
+		log("info", "Anti-AFK: กันโดนเตะเพราะไม่ขยับ")
+		afkRow.setStatus("ทำงานล่าสุด " .. os.date("%H:%M:%S"), Theme.good)
+	end)
+
+	-- Auto Rejoin: เกมขึ้นข้อความ error (หลุด/โดนเตะ) → เข้าเกมใหม่
+	local queueTeleport = (typeof(queue_on_teleport) == "function" and queue_on_teleport)
+		or (typeof(queueonteleport) == "function" and queueonteleport)
+		or nil
+	local rejoining = false
+	local function rejoin(reason: string)
+		if rejoining or not running then
+			return
+		end
+		rejoining = true
+		log("warn", "หลุดจากเกม (" .. reason .. ") กำลังเข้าใหม่...")
+		if queueTeleport and canFile then
+			-- ไฟล์ชื่อใหม่ก่อน ถ้ายังไม่ได้เซฟชื่อใหม่ใช้ไฟล์ชื่อเดิม
+			for _, fileName in { SCRIPT_FILE, LEGACY_SCRIPT_FILE } do
+				if isfile(fileName) then
+					pcall(queueTeleport, 'loadstring(readfile("' .. fileName .. '"))()')
+					break
+				end
+			end
+		end
+		task.spawn(function()
+			while running do
+				pcall(function()
+					TeleportService:Teleport(game.PlaceId, localPlayer)
+				end)
+				task.wait(15)
+			end
+		end)
+	end
+	connect(GuiService.ErrorMessageChanged, function(message)
+		if config.autoRejoin and type(message) == "string" and message ~= "" then
+			rejoinRow.setStatus("หลุด: " .. message, Theme.bad)
+			task.delay(3, rejoin, message)
+		end
+	end)
+
+	section(miscPage, "สคริปต์")
+	local capabilityCard = liveCard(miscPage)
+	local function yesNo(value: boolean): string
+		return if value then "<font color=\"#52D074\">มี</font>" else "<font color=\"#F05A5A\">ไม่มี</font>"
+	end
+	local loadedModules = {}
+	for name, module in { Economy = Economy, Upgrades = Upgrades, MinerCatalog = MinerCatalog, PetCatalog = PetCatalog, PetFarm = PetFarm, Potions = Potions, GeneralStore = GeneralStore, SpinWheel = SpinWheel } do
+		if module then
+			table.insert(loadedModules, name)
+		end
+	end
+	table.sort(loadedModules)
+	capabilityCard.Text = string.format(
+		"ฟังก์ชันของ executor: กดปุ่ม E %s · เขียนไฟล์ (จำค่า) %s · รันต่อหลังเข้าใหม่ %s · จำกัด FPS %s\nโมดูลเกมที่โหลดได้: %s",
+		yesNo(typeof(fireproximityprompt) == "function"),
+		yesNo(canFile),
+		yesNo(queueTeleport ~= nil),
+		yesNo(typeof(setfpscap) == "function"),
+		if #loadedModules > 0 then table.concat(loadedModules, ", ") else "ไม่มี"
+	)
+
+	buttonRow(miscPage, {
+		{
+			label = "💾 บันทึกค่า",
+			callback = function()
+				saveConfig()
+				log("info", if canFile then "บันทึกค่าลง " .. CONFIG_FILE .. " แล้ว" else "executor ไม่รองรับการเขียนไฟล์ ค่าจะอยู่จนปิดเกม")
+			end,
+		},
+		{
+			label = "↺ คืนค่าเริ่มต้น",
+			callback = function()
+				for key, value in DEFAULTS do
+					config[key] = value
+				end
+				saveConfig()
+				log("warn", "คืนค่าเริ่มต้นแล้ว รันสคริปต์ใหม่เพื่อให้ปุ่มแสดงค่าถูกต้อง")
+			end,
+		},
+		{
+			label = "⏻ ปิดสคริปต์",
+			color = Color3.fromRGB(78, 44, 50),
+			callback = function()
+				if typeof(env.BackSoyer_Cleanup) == "function" then
+					env.BackSoyer_Cleanup()
+				end
+			end,
+		},
+	})
+
+	table.insert(cleanupHooks, function()
+		if spectating then
+			setSpectate(false)
+		end
+		if config.lowGfx then
+			applyLowGfx(false)
+		end
+	end)
+
+	if config.lowGfx then
+		applyLowGfx(true)
+	end
+end
+
+---------------------------------------------------------------------
+-- 18) LOG + สรุปรอบนี้
+---------------------------------------------------------------------
+do
+	local page = pages.Log
+	local summaryHolder = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.panel,
+		LayoutOrder = -1000000000,
+		Parent = page,
+	}, { corner(10), padding(9, 12, 9, 12), vlist(6) })
+	local summaryLabel = paragraph({ Text = "", TextSize = 13, RichText = true, LayoutOrder = 1, Parent = summaryHolder })
+	local clearButton = button({ Text = "ล้าง log", Size = UDim2.fromOffset(90, 26), LayoutOrder = 2, Parent = summaryHolder })
+	connect(clearButton.Activated, function()
+		for _, child in page:GetChildren() do
+			if child:IsA("TextLabel") then
+				child:Destroy()
+			end
+		end
+	end)
+
+	refreshers.Log = function()
+		summaryLabel.Text = string.format(
+			"<b>สรุปรอบนี้</b> (%s)\nเก็บ Stock %d · หลอม %d · ขาย %d ครั้ง (%d กล่อง)\nอัพเกรด %d · miner %d · สุ่ม %d · ฟักไข่ %d · ซื้อไข่ %d\nเควส %d · หมุนวงล้อ %d · ดื่มยา %d\nได้ %s · ใช้ %s",
+			fmtTime(os.clock() - session.start),
+			counters.take,
+			counters.smelt,
+			counters.sell,
+			counters.sellCrates,
+			counters.upgrades,
+			counters.miners,
+			counters.rolls,
+			counters.hatched,
+			counters.eggsBought,
+			counters.quests,
+			counters.spins,
+			counters.potions,
+			fmtCash(session.earned),
+			fmtCash(session.spent)
+		)
+	end
+end
+
+---------------------------------------------------------------------
+-- 19) หน้าต่าง: เปิด/ปิด/ย่อ/หยุด + ปุ่มลัด
+---------------------------------------------------------------------
+do
+	local opener = button({
+		Text = "⛏  Back Soyer",
+		TextSize = 14,
+		TextColor3 = Theme.bg,
+		BackgroundColor3 = Theme.accent,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 12, 0.5, 0),
+		Size = UDim2.fromOffset(134, 34),
+		Visible = false,
+		Parent = gui,
+	})
+
+	local function setWindowOpen(open: boolean)
+		window.Visible = open
+		opener.Visible = not open
+		config.uiOpen = open
+		saveConfig()
+	end
+
+	local minimized = false
+	connect(chrome.minimize.Activated, function()
+		minimized = not minimized
+		tween(window, { Size = UDim2.fromOffset(WIN_W, if minimized then 46 else WIN_H) }, 0.2)
+	end)
+	connect(chrome.close.Activated, function()
+		setWindowOpen(false)
+		toast("ซ่อนหน้าต่างแล้ว · กด " .. config.uiKey .. " หรือปุ่ม ⛏ เพื่อเปิด", Theme.info)
+	end)
+	connect(opener.Activated, function()
+		setWindowOpen(true)
+	end)
+	connect(chrome.pause.Activated, function()
+		paused = not paused
+		chrome.pause.Text = if paused then "▶ ทำงานต่อ" else "⏸ หยุดทั้งหมด"
+		chrome.pause.BackgroundColor3 = if paused then Theme.good else Theme.panel2
+		setActivity(nil)
+		log("warn", if paused then "หยุดทุกระบบชั่วคราว" else "ทำงานต่อ")
+	end)
+	connect(UserInputService.InputBegan, function(input, gameProcessed)
+		if not gameProcessed and input.KeyCode.Name == config.uiKey then
+			setWindowOpen(not window.Visible)
+		end
+	end)
+
+	if not config.uiOpen then
+		setWindowOpen(false)
+	end
+end
+
+---------------------------------------------------------------------
+-- 20) อัปเดตตัวเลขบนหน้าจอทุกครึ่งวินาที
+---------------------------------------------------------------------
+do
+	local function weatherText(): string
+		local key = ReplicatedStorage:GetAttribute("Weather")
+		local left = num(ReplicatedStorage:GetAttribute("WeatherEnds")) - workspace:GetServerTimeNow()
+		if type(key) ~= "string" or key == "" or left <= 0 then
+			return "☀ อากาศปกติ"
+		end
+		local def = WeatherInfo and WeatherInfo.BY_KEY and WeatherInfo.BY_KEY[key]
+		local mutation = def and def.mut
+		return string.format(
+			"%s %s %s%s",
+			(def and def.icon) or "🌦",
+			(def and def.name) or key,
+			fmtTime(left),
+			if mutation then string.format(" (mutation %s x%d)", mutation, (WeatherInfo and WeatherInfo.BOOST) or 10) else ""
+		)
+	end
+
+	task.spawn(function()
+		while running do
+			pcall(function()
+				stats.cash.Text = fmtCash(cash())
+				stats.earned.Text = "+" .. fmtCash(session.earned)
+				stats.rate.Text = fmtCash(ratePerMinute()) .. "/นาที"
+				stats.uptime.Text = fmtTime(os.clock() - session.start)
+				infoLine.Text = string.format(
+					"Plot %s  ·  รายได้ตามเกม %s/นาที  ·  ใช้ไป %s  ·  %s%s",
+					tostring(plotId() or "?"),
+					fmtCash(pAttr("IncomePerMin") or 0),
+					fmtCash(session.spent),
+					weatherText(),
+					if paused then "  ·  ⏸ หยุดอยู่" else ""
+				)
+			end)
+			for name, refresh in refreshers do
+				local page = pages[name]
+				if page and page.Visible then
+					pcall(refresh)
+				end
+			end
+			task.wait(0.5)
+		end
+	end)
+end
+
+---------------------------------------------------------------------
+-- 21) ปิดสคริปต์ + เริ่มทำงาน
+---------------------------------------------------------------------
+env.BackSoyer_Cleanup = function()
+	running = false
+	for _, hook in cleanupHooks do
+		pcall(hook)
+	end
+	for _, conn in connections do
+		pcall(function()
+			conn:Disconnect()
+		end)
+	end
+	local camera = workspace.CurrentCamera
+	if camera and camera.CameraType == Enum.CameraType.Scriptable then
+		camera.CameraType = Enum.CameraType.Custom
+	end
+	gui:Destroy()
+end
+
+selectTab("Farm")
+setActivity(nil)
+
+do
+	local missing = {}
+	for name, module in { Economy = Economy, Upgrades = Upgrades, MinerCatalog = MinerCatalog } do
+		if not module then
+			table.insert(missing, name)
+		end
+	end
+	log("info", "Back Soyer v" .. VERSION .. " เริ่มทำงาน · Plot " .. tostring(plotId() or "?"))
+	if #missing > 0 then
+		log("warn", "โหลดโมดูลเกมไม่ได้: " .. table.concat(missing, ", ") .. " (บางระบบจะใช้ค่าสำรอง)")
+	end
+	if not config.sellPadRel then
+		log("warn", "ยังไม่รู้ตำแหน่งแท่นขาย: เดินไปเหยียบแท่นขาย (Sell Ores) 1 ครั้ง")
+	end
+end
+toast("⛏ Back Soyer พร้อมทำงาน · " .. config.uiKey .. " = ซ่อน/แสดง", Theme.accent)
+-- ขอข้อมูลกระเป๋าตั้งแต่เริ่ม (ไว้เช็คกระเป๋าเต็ม)
+task.delay(2, fire, "BagAction", "sync")
