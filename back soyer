@@ -568,6 +568,35 @@ local function indexProgress(): (number, number, number, number, number)
 	return minersHave, minersTotal, petsHave, petsTotal, sets
 end
 
+-- ชุดสัตว์ (ไข่ 1 ชนิด): ยังขาดกี่ตัว และคาดว่าต้องฟักอีกกี่ฟองถึงครบ (คิดจากโอกาสออกของแต่ละตัวในไข่)
+local function indexPetEta(block: any, indexedPets: { [string]: boolean }): (number, number)
+	local total = 0
+	local missing = {}
+	for _, pet in block.pets or {} do
+		local chance = math.max(num(pet.chance, 1), 0.001)
+		total += chance
+		if not indexedPets[pet.id] then
+			table.insert(missing, chance)
+		end
+	end
+	if #missing == 0 or total <= 0 or #missing > 12 then
+		return #missing, 0
+	end
+	-- สะสมของโอกาสไม่เท่ากันให้ครบ: รวม ±1/(โอกาสรวมของกลุ่มย่อย) ทุกกลุ่มย่อยของตัวที่ขาด
+	local eggs = 0
+	for mask = 1, 2 ^ #missing - 1 do
+		local sum, count = 0, 0
+		for index = 1, #missing do
+			if (mask // 2 ^ (index - 1)) % 2 == 1 then
+				sum += missing[index]
+				count += 1
+			end
+		end
+		eggs += (if count % 2 == 1 then 1 else -1) * total / sum
+	end
+	return #missing, eggs
+end
+
 -- เวลาแบบสั้น: 45 วินาที / 2 นาที / 2:30 นาที
 local function fmtDuration(seconds: number): string
 	if seconds < 60 then
@@ -2350,6 +2379,129 @@ end
 startLoop("Storm", nil, 2, nil, storm.tick)
 
 ---------------------------------------------------------------------
+-- 11.6) ตรวจระบบ: แต่ละแท็บลงทะเบียนการตรวจของตัวเอง (ไม่ใช้เงิน) · ปุ่มอยู่ในแท็บ AFK
+-- ผลของการตรวจ: true = ✓ ใช้ได้, false = ✗ มีปัญหา, nil = ! ควรรู้ (ไม่ใช่ปัญหา)
+---------------------------------------------------------------------
+local diag = { checks = {} :: { { name: string, run: () -> (boolean?, string) } }, report = "" }
+
+function diag.add(name: string, run: () -> (boolean?, string))
+	table.insert(diag.checks, { name = name, run = run })
+end
+
+function diag.run(): (string, number)
+	local lines = { string.format("Back Soyer v%s · ตรวจระบบ %s · Plot %s", VERSION, os.date("%Y-%m-%d %H:%M"), tostring(plotId() or "?")) }
+	local bad = 0
+	for _, check in diag.checks do
+		local ok, status, detail = pcall(check.run)
+		local mark = "!"
+		if not ok then
+			mark, detail = "✗", "ตรวจไม่ได้: " .. tostring(status)
+		elseif status == true then
+			mark = "✓"
+		elseif status == false then
+			mark = "✗"
+		end
+		if mark == "✗" then
+			bad += 1
+		end
+		table.insert(lines, string.format("%s %s: %s", mark, check.name, tostring(detail)))
+	end
+	diag.report = table.concat(lines, "\n")
+	return diag.report, bad
+end
+
+diag.add("ตัวละคร", function()
+	if not alive() then
+		return false, "ตัวละครยังไม่เกิด / ตายอยู่"
+	end
+	return plotId() ~= nil, "Plot " .. tostring(plotId() or "ไม่พบ")
+end)
+
+diag.add("โมดูลเกม", function()
+	local missing = {}
+	local list = {
+		{ "Economy", Economy },
+		{ "Upgrades", Upgrades },
+		{ "MinerCatalog", MinerCatalog },
+		{ "PetCatalog", PetCatalog },
+		{ "PetFarm", PetFarm },
+		{ "Potions", Potions },
+		{ "GeneralStore", GeneralStore },
+		{ "SpinWheel", SpinWheel },
+		{ "Weather", WeatherInfo },
+		{ "Traits", team.Traits },
+		{ "Grades", team.Grades },
+	}
+	for _, entry in list do
+		if not entry[2] then
+			table.insert(missing, entry[1])
+		end
+	end
+	return #missing == 0, if #missing == 0 then "โหลดครบ " .. #list .. " ตัว" else "โหลดไม่ได้: " .. table.concat(missing, ", ")
+end)
+
+diag.add("Remote ของเกม", function()
+	if not remoteFolder then
+		return false, "ไม่พบ ReplicatedStorage.RemoteEvents"
+	end
+	local names = {
+		"SellSmelted", "AwayClaim", "StatUpgradeRequest", "MineUpgradeRequest", "QuarryUpgradeRequest", "RollAreaRequest",
+		"DoorUnlockRequest", "FarmAction", "StoreAction", "RollBuy", "AutoRoll", "BagAction", "BagSync", "BagNotice",
+		"GradeAction", "PotionAction", "QuestAction", "SpinAction", "GroupReward", "WarpRequest", "DailyClaim", "FarmHatch", "PetShopBuy",
+	}
+	local missing = {}
+	for _, name in names do
+		if not remoteFolder:FindFirstChild(name) then
+			table.insert(missing, name)
+		end
+	end
+	return #missing == 0, if #missing == 0 then "ครบ " .. #names .. " ตัว" else "หาไม่เจอ: " .. table.concat(missing, ", ") .. " (เกมอาจอัปเดต)"
+end)
+
+diag.add("Executor", function()
+	local function has(value: boolean): string
+		return if value then "มี" else "ไม่มี"
+	end
+	local prompt = typeof(fireproximityprompt) == "function"
+	local clip = typeof(setclipboard) == "function" or typeof(toclipboard) == "function"
+	return (if prompt and canFile then true else nil), string.format("กดปุ่ม E %s · เขียนไฟล์ %s · คัดลอก %s", has(prompt), has(canFile), has(clip))
+end)
+
+diag.add("สิ่งก่อสร้างของแปลง", function()
+	local found, missing = {}, {}
+	for _, prefix in { "Stock", "Smeltery", "Shop", "RollArea" } do
+		table.insert(if myBuilding(prefix) then found else missing, prefix)
+	end
+	if myFarm() then
+		table.insert(found, "Farm")
+	end
+	return #missing == 0, "เจอ " .. table.concat(found, ", ") .. (if #missing > 0 then " · ไม่เจอ " .. table.concat(missing, ", ") else "")
+end)
+
+diag.add("ร้านในเมือง", function()
+	local missing = {}
+	for _, name in { "GeneralShop", "PetShop", "PotionShop", "QuestShop", "LuckySpin", "WorkerShop" } do
+		if not hubProp(name) then
+			table.insert(missing, name)
+		end
+	end
+	return (if #missing == 0 then true else nil), if #missing == 0 then "เจอครบ 6 ร้าน" else "ไม่เจอ: " .. table.concat(missing, ", ") .. " (อาจยังไม่ปลดล็อก)"
+end)
+
+diag.add("ข้อมูลกระเป๋า", function()
+	if type(bag.list) ~= "table" then
+		fire("BagAction", "sync")
+		return nil, "ยังไม่ได้รับข้อมูล (ส่งคำขอแล้ว ลองตรวจใหม่อีกครั้ง)"
+	end
+	local _, slots, total = team.summary()
+	return true, string.format("miner %d/%s · ทำงานที่ประตู %d ช่อง · แรงทีม %.1f ore/นาที", #bag.list, tostring(bag.cap or "?"), slots, total)
+end)
+
+diag.add("ล่าพายุ", function()
+	return (if WeatherInfo then true else nil), storm.text()
+end)
+
+---------------------------------------------------------------------
 -- 12) FARM: Stock → หลอม → เก็บกล่องหลอมเสร็จ → ขาย
 ---------------------------------------------------------------------
 function setup.farm()
@@ -2651,6 +2803,32 @@ function setup.farm()
 		end
 	end
 	startLoop("Auto Farm", "autoStock", 1, stockRow, farmCycle)
+
+	-- ตรวจระบบ: หาปุ่ม Stock / เตา / กล่องหลอมเสร็จ และลองวาปไปยืนบนแท่นขาย (ไม่ขาย)
+	diag.add("ฟาร์ม + แท่นขาย", function()
+		local prompts = farmPrompts()
+		local missing = {}
+		for _, key in { "take", "smelt", "collect" } do
+			if not prompts[key] then
+				table.insert(missing, key)
+			end
+		end
+		local pad = sellPadCFrame()
+		local promptText = if #missing == 0 then "ปุ่ม Stock / เตา / กล่องหลอมเสร็จ เจอครบ" else "ไม่เจอปุ่ม " .. table.concat(missing, ", ")
+		if not pad then
+			return false, promptText .. " · หาแท่นขายไม่เจอ: เดินไปเหยียบแท่นขาย 1 ครั้ง"
+		end
+		local onPad = pAttr("OnSellPad") == true
+		if not onPad then
+			withHops("ตรวจระบบ: แท่นขาย", function(hopTo)
+				hopTo(pad)
+				onPad = waitFor(function()
+					return pAttr("OnSellPad") == true
+				end, 1.5)
+			end)
+		end
+		return onPad and #missing == 0, promptText .. " · วาปไปยืนแท่นขาย" .. (if onPad then "ได้" else "ไม่ติด (เพิ่ม 'รอหลังวาป' หรือเหยียบแท่นเองใหม่)")
+	end)
 
 	startLoop("Away Cash", "claimAway", 10, awayRow, function()
 		local away = num(pAttr("AwayCash"))
@@ -3429,6 +3607,24 @@ function setup.upgrades()
 	end
 	startLoop("Auto Upgrade", "autoUpgrade", 1.2, upgradeRow, upgradeCycle)
 
+	diag.add("ป้ายอัพเกรด", function()
+		local found, missing = {}, {}
+		for _, kind in BOARD_KINDS do
+			boardCache[kind] = nil
+			local board = myBoard(kind)
+			table.insert(if board and boardSpot(board) then found else missing, kind)
+		end
+		-- ยังไม่มีฟาร์ม = ไม่มีป้าย Farm เป็นเรื่องปกติ
+		local fine = #missing == 0 or (#missing == 1 and missing[1] == "Farm" and myFarm() == nil)
+		return fine,
+			string.format(
+				"เจอ %s%s · ของที่ซื้อได้ตอนนี้ %d อย่าง",
+				if #found > 0 then table.concat(found, ", ") else "-",
+				if #missing > 0 then " · ไม่เจอ " .. table.concat(missing, ", ") else "",
+				#upgradeCandidates()
+			)
+	end)
+
 	setup.grade(upgradePage)
 
 	section(upgradePage, "ตรวจสอบ", "ถ้าอัพไม่ติด กดปุ่มนี้ดูว่าสคริปต์หาป้ายเจอ และยืนถูกที่ไหม (ผลอยู่ในแท็บ Log)")
@@ -3851,6 +4047,17 @@ function setup.roll()
 		return (config.autoIndex and not indexed[info.key]) or forTeam(info, minTier, threshold)
 	end
 
+	-- ชุด Index ของ rarity นี้ยังขาดกี่ตัว (ครบชุด = เงิน +3% ถาวร)
+	local function missingInSet(rarity: string, indexed: { [string]: boolean }): number
+		local count = 0
+		for _, name in minerPool()[rarity] or {} do
+			if not indexed[name] then
+				count += 1
+			end
+		end
+		return count
+	end
+
 	-- รายชื่อที่ส่งให้ Auto Roll ของเกม: ตัวที่ขาดใน Index + พันธุ์ที่ช่วยทีมได้
 	-- ซื้อแบบฉลาด: พันธุ์ที่ถ้าออกมาขนาด Big ก็แรงกว่าตัวที่อ่อนสุดในทีม (แท่นออกจริงค่อยเช็คแรงขุดจริงอีกที)
 	-- (ไม่ใส่ตัวที่โชว์อยู่บนแท่นแต่เราข้ามไป ไม่งั้นเกมเจอตัวเดิมแล้วหยุดสุ่มทันที)
@@ -4228,6 +4435,11 @@ function setup.roll()
 				if storm.boosts(info.mut) then
 					pct = math.max(pct, config.stormSpendPct)
 				end
+				-- ตัวสุดท้ายของชุด Index: ครบแล้วได้เงิน +3% ถาวร ใช้เงินได้เต็มและรอเงินได้นานขึ้น
+				local finisher = isNew and missingInSet(info.rarity, indexed) == 1
+				if finisher then
+					pct = 100
+				end
 				if info.price <= money * pct / 100 then
 					if triesFor(pedestal, info.rollId) >= 2 then
 						-- ลองซื้อครบ 2 ครั้งแล้วไม่ได้: ข้ามไปสุ่มใหม่
@@ -4252,7 +4464,7 @@ function setup.roll()
 					end
 				else
 					-- เงินไม่พอ: รอเฉพาะตัวที่เก็บเงินทันในไม่กี่นาที (ตัวที่ขาดใน Index รอได้ 10 นาที ตัวอื่น 2 นาที) ไม่งั้นสุ่มต่อเลย
-					local minutes = if isNew then 10 else 2
+					local minutes = if finisher then 20 elseif isNew then 10 else 2
 					local eta = if income > 0 then (info.price * 100 / pct - money) / income else math.huge
 					if eta <= minutes then
 						if waitingFor == nil or info.price < waitingFor.price then
@@ -4389,6 +4601,17 @@ function setup.roll()
 		end
 	end
 	startLoop("Auto Roll", nil, 1, rollRow, rollCycle)
+
+	diag.add("แท่นสุ่ม", function()
+		local pedestals, area = myPedestals()
+		if not area then
+			return false, "ไม่พบพื้นที่สุ่ม (RollArea) ของแปลงนี้"
+		end
+		local levers = #findLevers(area)
+		local access = hasAutoRollAccess()
+		return #pedestals > 0 and (access or levers > 0),
+			string.format("แท่น %d · Auto Roll ของเกม %s · คันโยก %d อัน", #pedestals, if access then "มีสิทธิ์" else "ไม่มีสิทธิ์", levers)
+	end)
 
 	refreshers.Roll = function()
 		local pedestals = myPedestals()
@@ -4716,6 +4939,14 @@ function setup.pets()
 		hatchRow.setStatus(string.format("ตู้ฟัก %d ตู้ · กำลังฟัก %d · ว่าง %d · ฟักไปแล้ว %d ตัว", #list, busy, empty, counters.hatched))
 	end
 	startLoop("Auto Hatch", "autoHatch", 3, hatchRow, hatchCycle)
+
+	diag.add("ฟาร์มสัตว์", function()
+		local farm = myFarm()
+		if not farm then
+			return nil, "ยังไม่มีฟาร์ม (เปิดที่ Quarry Lv2)"
+		end
+		return true, string.format("ตู้ฟัก %d ตู้ · ไข่ในกระเป๋า %d ฟอง", #incubators(farm), num(pAttr("EggCount")))
+	end)
 
 	startLoop("Unlock Farm", "unlockFarm", 15, farmUnlockRow, function()
 		local farm = myFarm()
