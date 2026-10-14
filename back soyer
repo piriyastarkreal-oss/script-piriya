@@ -1,5 +1,5 @@
 --[[
-	Back Soyer · All-in-One AFK  (v2.7.1)
+	Back Soyer · All-in-One AFK  (v2.7.2)
 
 	วิธีใช้
 	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
@@ -17,7 +17,7 @@
 	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
 ]]
 
-local VERSION = "2.7.1"
+local VERSION = "2.7.2"
 -- Webhook ของเจ้าของสคริปต์: ทุกคนที่รันสคริปต์จะแจ้งชื่อเข้าห้องนี้ 1 ครั้งต่อการเปิดใช้ (ว่าง = ไม่แจ้ง)
 -- คนที่ได้ไฟล์นี้ไปอ่านลิงก์นี้ได้ ใช้ Webhook แยกห้องเฉพาะสำหรับเรื่องนี้
 local OWNER_WEBHOOK = "https://ptb.discord.com/api/webhooks/1559828908356927539/k6TrgenxIQj7teeDs13LRk4QthZpB-T9DIz79b2Vs5LBNHdtMhJFgJrwX2bLqSQcD6Lu"
@@ -37,13 +37,45 @@ local CollectionService = game:GetService("CollectionService")
 local TeleportService = game:GetService("TeleportService")
 local GuiService = game:GetService("GuiService")
 
+---------------------------------------------------------------------
+-- 0) รอเกมพร้อม: autoexec / Auto Rejoin รันสคริปต์ตั้งแต่ยังอยู่หน้าโหลดเกม (ยังไม่มีตัวผู้เล่น)
+---------------------------------------------------------------------
+local env = (typeof(getgenv) == "function" and getgenv()) or _G
+-- เข้าเซิร์ฟใหม่แล้ว autoexec กับ Auto Rejoin อาจรันสคริปต์พร้อมกัน 2 ตัว: ตัวที่เริ่มทีหลังได้ทำงาน ตัวก่อนหน้าเลิกเอง
+local runToken = {}
+env.BackSoyer_Token = runToken
+
+if not game:IsLoaded() then
+	game.Loaded:Wait()
+end
+while not Players.LocalPlayer do
+	task.wait(0.1)
+end
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
+
+-- autoexec รันทุกเกมที่เข้า: เกมที่ไม่มี remote ของเกมขุดแร่นี้ ไม่ทำอะไร
+local Shared = ReplicatedStorage:WaitForChild("Shared", 20)
+local remoteFolder = ReplicatedStorage:WaitForChild("RemoteEvents", 20)
+if not (Shared and remoteFolder and (remoteFolder:FindFirstChild("SellSmelted") or remoteFolder:FindFirstChild("RollBuy"))) then
+	warn("[BackSoyer] ไม่ใช่เกมที่สคริปต์นี้รองรับ ไม่ได้เปิดใช้")
+	return
+end
+
+-- รอเกมส่งเงินกับแปลงของเรามา (ไม่เกิน 30 วิ) ไม่งั้นเงินที่โหลดมาทีหลังจะถูกนับเป็นรายได้ของรอบนี้
+do
+	local waitStart = os.clock()
+	while (localPlayer:GetAttribute("Cash") == nil or localPlayer:GetAttribute("Plot") == nil) and os.clock() - waitStart < 30 do
+		task.wait(0.2)
+	end
+end
+if env.BackSoyer_Token ~= runToken then
+	return
+end
 
 ---------------------------------------------------------------------
 -- 1) รันซ้ำ: ปิดตัวเก่าทั้งหมดก่อน (รวมสคริปต์รุ่นก่อน ๆ)
 ---------------------------------------------------------------------
-local env = (typeof(getgenv) == "function" and getgenv()) or _G
 for _, key in { "BackSoyer_Cleanup", "MineHub_Cleanup", "AllInOne_Cleanup", "AutoStock_Cleanup", "SpectateUI_Cleanup" } do
 	if typeof(env[key]) == "function" then
 		pcall(env[key])
@@ -213,11 +245,8 @@ local function saveConfig()
 end
 
 ---------------------------------------------------------------------
--- 3) ข้อมูลเกม (require โมดูลของเกมเอง ถ้าโหลดไม่ได้จะใช้ค่าสำรอง)
+-- 3) ข้อมูลเกม (require โมดูลของเกมเอง ถ้าโหลดไม่ได้จะใช้ค่าสำรอง) · Shared / remoteFolder หาไว้แล้วในข้อ 0
 ---------------------------------------------------------------------
-local Shared = ReplicatedStorage:WaitForChild("Shared", 20)
-local remoteFolder = ReplicatedStorage:WaitForChild("RemoteEvents", 20)
-
 local function safeRequire(name: string): any
 	local module = Shared and Shared:FindFirstChild(name)
 	if not module then
@@ -1752,7 +1781,8 @@ end
 ---------------------------------------------------------------------
 -- 9) สถิติของรอบนี้
 ---------------------------------------------------------------------
-local session = { start = os.clock(), earned = 0, spent = 0, lastCash = cash(), samples = {} }
+-- lastCash = nil: เกมยังไม่ส่งยอดเงินมา ค่าแรกที่โหลดมาไม่นับเป็นรายได้ (แบบเดียวกับตัวเลขเงินของเกม)
+local session = { start = os.clock(), earned = 0, spent = 0, lastCash = tonumber(pAttr("Cash")), samples = {} }
 local counters = {
 	take = 0,
 	smelt = 0,
@@ -1850,7 +1880,7 @@ end
 
 connect(localPlayer:GetAttributeChangedSignal("Cash"), function()
 	local now = cash()
-	local delta = now - session.lastCash
+	local delta = now - (session.lastCash or now)
 	if delta > 0 then
 		session.earned += delta
 	elseif delta < 0 then
@@ -7089,22 +7119,30 @@ runSetup("refresh", setup.refresh)
 ---------------------------------------------------------------------
 -- 21) ปิดสคริปต์ + เริ่มทำงาน
 ---------------------------------------------------------------------
-env.BackSoyer_Cleanup = function()
-	running = false
-	run.save()
-	for _, hook in cleanupHooks do
-		pcall(hook)
+do
+	local function shutdown()
+		running = false
+		run.save()
+		for _, hook in cleanupHooks do
+			pcall(hook)
+		end
+		for _, conn in connections do
+			pcall(function()
+				conn:Disconnect()
+			end)
+		end
+		local camera = workspace.CurrentCamera
+		if camera and camera.CameraType == Enum.CameraType.Scriptable then
+			camera.CameraType = Enum.CameraType.Custom
+		end
+		gui:Destroy()
 	end
-	for _, conn in connections do
-		pcall(function()
-			conn:Disconnect()
-		end)
+	-- มีสคริปต์ตัวใหม่เริ่มระหว่างที่ตัวนี้กำลังโหลด: ปิดตัวนี้ให้ตัวใหม่ทำงานแทน (ไม่ทับตัวปิดของตัวใหม่)
+	if env.BackSoyer_Token ~= runToken then
+		shutdown()
+		return
 	end
-	local camera = workspace.CurrentCamera
-	if camera and camera.CameraType == Enum.CameraType.Scriptable then
-		camera.CameraType = Enum.CameraType.Custom
-	end
-	gui:Destroy()
+	env.BackSoyer_Cleanup = shutdown
 end
 
 selectTab("Farm")
