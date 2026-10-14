@@ -4705,13 +4705,26 @@ function setup.index()
 		indexPage,
 		"indexPets",
 		"Auto Index: สัตว์",
-		"วางไข่และซื้อไข่ชนิดที่ยังมีสัตว์ขาดก่อน (ต้องเปิด Auto Hatch และซื้อไข่อัตโนมัติในแท็บ Pets ด้วย)"
+		"วางไข่และซื้อไข่ของชุดที่ต้นทุนให้ครบต่ำสุดก่อน (จำนวนฟองที่คาดว่าต้องฟัก × ราคาไข่) · ต้องเปิด Auto Hatch และซื้อไข่อัตโนมัติในแท็บ Pets ด้วย"
 	)
 	section(
 		indexPage,
 		"ข้อควรรู้",
 		"miner แต่ละ rarity มี 5 ตัว ตัว rarity สูงสุ่มเจอยาก (Exotic ~1%, Celestial ~0.3%) อาจใช้เวลานาน · ตัวที่ขาดแต่เงินยังไม่พอ จะรอเงินได้ถึง 10 นาที (กันเงินไม่ให้ Auto Upgrade ใช้) ถ้านานกว่านั้นจะสุ่มต่อ · ถ้ากระเป๋าเต็มจะซื้อไม่ได้ ให้เปิด Bigger Bag ในแท็บ Upgrades หรือ 'ลบ miner ที่แย่สุด' ในแท็บ Roll · สัตว์ได้จากการฟักไข่เท่านั้น (Pet Shop เปิดที่ Quarry Lv2) ไข่แต่ละชนิดมีสัตว์ 3 ตัว ตัวหายากออก 10%"
 	)
+
+	-- ครบชุดใหม่ (เงิน +3% ถาวร): แจ้งทันที · ข้ามตอนยังโหลดรายชื่อไม่เสร็จ กันแจ้งผิด
+	local _, baseTotal, _, _, lastSets = indexProgress()
+	connect(localPlayer:GetAttributeChangedSignal("Index"), function()
+		local _, minersTotal, _, _, sets = indexProgress()
+		if sets > lastSets and baseTotal > 0 then
+			local text = string.format("ครบ %d ชุดแล้ว · โบนัสเงินรวม +%d%% ถาวร", sets, sets * 3)
+			log("good", "Index ครบชุดใหม่: " .. text)
+			toast("Index ครบชุดใหม่ · " .. text, Theme.good, 10)
+			alert("🏆 Index ครบชุดใหม่", text, Theme.good)
+		end
+		lastSets, baseTotal = sets, minersTotal
+	end)
 
 	refreshers.Index = function()
 		local indexed, indexedPets = indexSets()
@@ -4763,9 +4776,11 @@ function setup.index()
 			end
 			petsHave += have
 			petsTotal += #pets
-			if #pets > 0 and have == #pets then
+			local complete = #pets > 0 and have == #pets
+			if complete then
 				setsDone += 1
 			end
+			local _, eggsLeft = indexPetEta(block, indexedPets)
 			table.insert(
 				petLines,
 				string.format(
@@ -4773,7 +4788,10 @@ function setup.index()
 					escapeRich(tostring(block.oreName or block.key)),
 					have,
 					#pets,
-					if #pets > 0 and have == #pets then string.format(" <font color=\"%s\">✓</font>", colorHex(Theme.good)) else ""
+					if complete
+						then string.format(" <font color=\"%s\">✓</font>", colorHex(Theme.good))
+						elseif eggsLeft > 0 then string.format(" <font color=\"%s\">~%d ฟอง</font>", colorHex(Theme.dim), math.ceil(eggsLeft))
+						else ""
 				)
 			)
 		end
@@ -4825,21 +4843,17 @@ function setup.pets()
 		return list
 	end
 
-	-- ไข่ชนิดนี้ยังมีสัตว์ที่ไม่มีใน Index ไหม
-	local function eggHasMissingPet(eggKey: string, indexedPets: { [string]: boolean }): boolean
+	-- ไข่ชนิดนี้ต้องฟักอีกกี่ฟองถึงครบชุด (0 = ครบแล้ว / ไม่รู้จักไข่นี้)
+	local function eggsToComplete(eggKey: string, indexedPets: { [string]: boolean }): number
 		local def = PetCatalog and PetCatalog.BY_KEY and PetCatalog.BY_KEY[eggKey]
 		if not (def and def.pets) then
-			return false
+			return 0
 		end
-		for _, pet in def.pets do
-			if not indexedPets[pet.id] then
-				return true
-			end
-		end
-		return false
+		local missing, eggs = indexPetEta(def, indexedPets)
+		return if missing > 0 then math.max(eggs, 1) else 0
 	end
 
-	-- ไข่ที่มี: attribute Eggs = {ชื่อไข่: จำนวน} เลือกไข่ที่ยังมีสัตว์ขาดใน Index ก่อน แล้วค่อยระดับสูงสุด
+	-- ไข่ที่มี: attribute Eggs = {ชื่อไข่: จำนวน} เลือกชุดที่ใกล้ครบที่สุดก่อน (ต้องฟักอีกน้อยสุด) แล้วค่อยระดับสูงสุด
 	local function bestOwnedEgg(): string?
 		local _, indexedPets = indexSets()
 		local best, bestScore = nil, -1
@@ -4851,8 +4865,9 @@ function setup.pets()
 			if type(eggKey) == "string" and num(count) > 0 then
 				local def = PetCatalog and PetCatalog.BY_KEY and PetCatalog.BY_KEY[eggKey]
 				local score = (def and def.tier) or 0
-				if config.indexPets and eggHasMissingPet(eggKey, indexedPets) then
-					score += 100
+				local toGo = if config.indexPets then eggsToComplete(eggKey, indexedPets) else 0
+				if toGo > 0 then
+					score = 1000 - toGo
 				end
 				if score > bestScore then
 					best, bestScore = eggKey, score
@@ -5004,11 +5019,12 @@ function setup.pets()
 			local left = if type(entry) == "table" then num(entry[1]) else 0
 			if left > 0 and PetCatalog.unlocked(block.key, quarry) then
 				local price = PetCatalog.price(block.key)
-				-- ไข่ที่ยังมีสัตว์ขาดใน Index มาก่อน (เลือกถูกสุด จะได้ฟักได้หลายรอบ) ไม่งั้นเอาระดับสูงสุด
-				local forIndex = config.indexPets and eggHasMissingPet(block.key, indexedPets)
-				local score = if forIndex then 1000 - block.tier else block.tier
+				-- ไข่ของชุด Index ที่ยังไม่ครบมาก่อน เลือกชุดที่ต้นทุนให้ครบต่ำสุด (ฟองที่ต้องฟัก × ราคา) ไม่งั้นเอาระดับสูงสุด
+				local toGo = if config.indexPets then eggsToComplete(block.key, indexedPets) else 0
+				local forIndex = toGo > 0
+				local score = if forIndex then 1000 - math.log10(math.max(toGo * price, 1)) else block.tier
 				if price <= money * config.eggMaxSpendPct / 100 and (not best or score > best.score) then
-					best = { key = block.key, tier = block.tier, price = price, name = block.name, score = score, forIndex = forIndex }
+					best = { key = block.key, tier = block.tier, price = price, name = block.name, score = score, forIndex = forIndex, toGo = toGo }
 				end
 			end
 		end
@@ -5021,7 +5037,15 @@ function setup.pets()
 			local ok, result = invoke("PetShopBuy", 8, best.key)
 			if ok and type(result) == "table" and result.ok then
 				counters.eggsBought += 1
-				log("buy", string.format("ซื้อ %s (%s)%s", best.name, fmtCash(best.price), if best.forIndex then " เพื่อ Index" else ""))
+				log(
+					"buy",
+					string.format(
+						"ซื้อ %s (%s)%s",
+						best.name,
+						fmtCash(best.price),
+						if best.forIndex then string.format(" เพื่อ Index (คาดอีก ~%d ฟองครบชุด)", math.ceil(best.toGo)) else ""
+					)
+				)
 				eggRow.setStatus("ซื้อ " .. best.name .. " · " .. os.date("%H:%M:%S"), Theme.good)
 			end
 		end)
@@ -5622,6 +5646,65 @@ function setup.afk()
 		})
 	end
 
+	-- ข้อความสดใน Discord: สร้างครั้งแรกด้วย ?wait=true (ได้ id ข้อความกลับมา) แล้วแก้ข้อความเดิมทุก 1 นาที
+	-- แก้ไม่ได้ 3 ครั้งติด (executor ไม่รองรับ PATCH) = กลับไปส่งสรุปเป็นรอบแบบเดิม
+	local live = { fails = 0, at = -math.huge }
+	local function webhookBase(): string
+		local base = config.webhookUrl:match("^[^%?#]+") or config.webhookUrl
+		return (base:gsub("/+$", ""))
+	end
+	local function sendRaw(url: string, method: string, payload: { [string]: any }): (boolean, number?, string?)
+		local ok, response = pcall(httpRequest, {
+			Url = url,
+			Method = method,
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = HttpService:JSONEncode(payload),
+		})
+		if not ok then
+			return false, nil, tostring(response)
+		end
+		local code = if type(response) == "table" then tonumber(response.StatusCode) else nil
+		local body = if type(response) == "table" and type(response.Body) == "string" then response.Body else ""
+		return code == nil or code < 300, code, body
+	end
+	local function updateLive(): (boolean, string?)
+		if not (httpRequest and validWebhook(config.webhookUrl)) then
+			return false, "ยังไม่ได้ใส่ Webhook URL ของ Discord"
+		end
+		local base = webhookBase()
+		local payload = summaryPayload("📡 สถานะสด")
+		local embedData = payload.embeds[1]
+		embedData.description = string.format(
+			"%s\nอัปเดตล่าสุด <t:%d:R> (ทุก 1 นาที ถ้าเวลานี้เก่าเกิน 5 นาที แปลว่าสคริปต์หยุดทำงาน)\nตอนนี้: %s",
+			embedData.description,
+			os.time(),
+			stripIcon(activityLabel.Text)
+		)
+		local id, savedBase = config.webhookLiveId:match("^(%d+)|(.+)$")
+		if id and savedBase == base then
+			payload.username = nil
+			local ok, code, info = sendRaw(base .. "/messages/" .. id, "PATCH", payload)
+			if ok then
+				return true, nil
+			elseif code ~= 404 then
+				return false, if code then "Discord ตอบกลับรหัส " .. code else tostring(info)
+			end
+			-- ข้อความเดิมถูกลบไปแล้ว: สร้างใหม่
+			payload.username = "Back Soyer"
+		end
+		local ok, code, info = sendRaw(base .. "?wait=true", "POST", payload)
+		if not ok then
+			return false, if code then "Discord ตอบกลับรหัส " .. code else tostring(info)
+		end
+		local data = decode(info)
+		if data.id == nil then
+			return false, "Discord ไม่ส่ง id ข้อความกลับมา"
+		end
+		config.webhookLiveId = tostring(data.id) .. "|" .. base
+		saveConfig()
+		return true, nil
+	end
+
 	section(
 		miscPage,
 		"โหมดสบายจัด",
@@ -5639,7 +5722,7 @@ function setup.afk()
 					"autoRoll", "smartBuy", "useGameAutoRoll", "pullLever", "equipBest", "stormHunter", "autoIndex", "indexPets",
 					"autoHatch", "buyEggs", "petEquipBest", "unlockFarm",
 					"daily", "quests", "spin", "groupReward", "openRx", "drinkPotions", "buyPotions", "storePotions",
-					"antiAfk", "autoRejoin", "watchdog", "afkScreenAuto", "toasts",
+					"antiAfk", "autoRejoin", "watchdog", "afkScreenAuto", "toasts", "webhookLive",
 				} do
 					config[key] = true
 				end
@@ -5698,8 +5781,19 @@ function setup.afk()
 	)
 	local webhookRow = inputRow(miscPage, "webhookUrl", "Webhook URL", "วางลิงก์ https://discord.com/api/webhooks/... ตรงนี้", true)
 	toggleRow(miscPage, "webhookAlerts", "แจ้งทันทีเมื่อมีเรื่องสำคัญ", "ได้ miner/สัตว์ใหม่เข้า Index · ได้ miner หายาก · อัพเกรดใหญ่ · กระเป๋าเต็ม · หลุดเกม")
+	toggleRow(
+		miscPage,
+		"webhookLive",
+		"ข้อความสถานะสด",
+		"ข้อความเดียวในห้องที่แก้ตัวเลขเองทุก 1 นาที แทนการส่งสรุปใหม่เป็นรอบ แชทไม่รก · มีเวลาอัปเดตล่าสุด ถ้านิ่งเกิน 5 นาที แปลว่าสคริปต์หยุด",
+		function(value)
+			if value then
+				live.fails, live.at = 0, -math.huge
+			end
+		end
+	)
 	cycleRow(miscPage, "alertMinRarity", "แจ้ง miner หายากตั้งแต่", nil, RARITY_NAMES, rarityColor)
-	stepperRow(miscPage, "webhookEvery", "ส่งสรุปทุก ๆ", "เงิน / รายได้ต่อชั่วโมง / Index / สถิติรอบนี้", 0, 240, 15, function(value)
+	stepperRow(miscPage, "webhookEvery", "ส่งสรุปทุก ๆ", "ใช้ตอนปิดข้อความสถานะสด · เงิน / รายได้ต่อชั่วโมง / Index / สถิติรอบนี้", 0, 240, 15, function(value)
 		return if value == 0 then "ไม่ส่ง" else value .. " นาที"
 	end)
 	buttonRow(miscPage, {
@@ -5741,6 +5835,23 @@ function setup.afk()
 				local ok, err = postWebhook(embed(item.title, item.text, item.color))
 				if not ok then
 					webhookRow.setStatus("ส่งแจ้งเตือนไม่สำเร็จ: " .. tostring(err), Theme.bad)
+				end
+			elseif config.webhookLive and live.fails < 3 then
+				if os.clock() - live.at >= 60 then
+					live.at = os.clock()
+					local ok, err = updateLive()
+					if ok then
+						live.fails = 0
+						webhookRow.setStatus("ข้อความสดอัปเดตล่าสุด " .. os.date("%H:%M:%S"), Theme.sub)
+					else
+						live.fails += 1
+						webhookRow.setStatus(
+							if live.fails >= 3
+								then "แก้ข้อความสดไม่ได้ 3 ครั้งติด (" .. tostring(err) .. ") กลับไปส่งสรุปเป็นรอบแทน"
+								else "อัปเดตข้อความสดไม่สำเร็จ: " .. tostring(err),
+							Theme.bad
+						)
+					end
 				end
 			elseif config.webhookEvery > 0 and os.clock() - lastReportAt >= config.webhookEvery * 60 then
 				lastReportAt = os.clock()
@@ -6327,6 +6438,66 @@ function setup.afk()
 		end)
 	end
 	setupAfkScreen()
+
+	diag.add("Discord", function()
+		if config.webhookUrl == "" then
+			return nil, "ยังไม่ได้ใส่ Webhook (ไม่บังคับ)"
+		elseif not validWebhook(config.webhookUrl) then
+			return false, "ลิงก์ Webhook รูปแบบไม่ถูก"
+		elseif not httpRequest then
+			return false, "executor นี้ส่งข้อมูลออกเน็ตไม่ได้"
+		end
+		return true,
+			if not config.webhookLive then "ส่งสรุปทุก " .. config.webhookEvery .. " นาที"
+			elseif live.fails >= 3 then "แก้ข้อความสดไม่ได้ ใช้ส่งสรุปเป็นรอบแทน"
+			else "ข้อความสดทำงาน"
+	end)
+	diag.add("บันทึกไฟล์", function()
+		return canFile, if canFile then "เซฟค่าที่ตั้งและสถิติทั้งคืนได้" else "executor เขียนไฟล์ไม่ได้: ค่าที่ตั้งจะหายตอนปิดเกม"
+	end)
+
+	section(miscPage, "ตรวจระบบ", "เช็คทุกระบบโดยไม่ใช้เงิน (วาปไปแท่นขายแป๊บเดียว) แล้วคัดลอกรายงานให้ วางส่งคนดูแลสคริปต์ได้เลย ผลขึ้นในแท็บ Log ด้วย")
+	local diagCard = liveCard(miscPage)
+	diagCard.Text = string.format("<font color=\"%s\">ยังไม่ได้ตรวจ · กดปุ่มด้านล่าง</font>", colorHex(Theme.sub))
+	local function showReport(report: string)
+		local lines = {}
+		for line in report:gmatch("[^\n]+") do
+			local mark = line:sub(1, 3)
+			local color = if mark == "✓" then Theme.good elseif mark == "✗" then Theme.bad elseif line:sub(1, 1) == "!" then Theme.accent else Theme.sub
+			table.insert(lines, string.format("<font color=\"%s\">%s</font>", colorHex(color), escapeRich(line)))
+		end
+		diagCard.Text = table.concat(lines, "\n")
+	end
+	buttonRow(miscPage, {
+		{
+			label = "ตรวจระบบทั้งหมด",
+			style = "primary",
+			callback = function()
+				diagCard.Text = "กำลังตรวจ..."
+				local report, bad = diag.run()
+				showReport(report)
+				local clip = (typeof(setclipboard) == "function" and setclipboard) or (typeof(toclipboard) == "function" and toclipboard) or nil
+				local copied = clip ~= nil and pcall(clip, report)
+				for line in report:gmatch("[^\n]+") do
+					if line:sub(1, 3) == "✗" then
+						log("bad", "ตรวจระบบ " .. line)
+					end
+				end
+				local summary = string.format("ตรวจระบบเสร็จ: %s%s", if bad > 0 then "มีปัญหา " .. bad .. " อย่าง" else "ทุกอย่างปกติ", if copied then " · คัดลอกรายงานแล้ว" else "")
+				log(if bad > 0 then "warn" else "good", summary)
+				toast(summary, if bad > 0 then Theme.bad else Theme.good)
+			end,
+		},
+		{
+			label = "ส่งรายงานเข้า Discord",
+			callback = function()
+				local report = if diag.report ~= "" then diag.report else (diag.run())
+				showReport(report)
+				local ok, err = postWebhook(embed("🩺 ตรวจระบบ", "```\n" .. report:sub(1, 3800) .. "\n```", Theme.info))
+				log(if ok then "good" else "bad", if ok then "ส่งรายงานตรวจระบบเข้า Discord แล้ว" else "ส่งรายงานไม่สำเร็จ: " .. tostring(err))
+			end,
+		},
+	})
 
 	section(miscPage, "สคริปต์")
 	local capabilityCard = liveCard(miscPage)
