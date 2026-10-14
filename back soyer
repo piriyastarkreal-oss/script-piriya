@@ -1,5 +1,5 @@
 --[[
-	Back Soyer · All-in-One AFK  (v2.5)
+	Back Soyer · All-in-One AFK  (v2.6)
 
 	วิธีใช้
 	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
@@ -17,7 +17,7 @@
 	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
 ]]
 
-local VERSION = "2.5"
+local VERSION = "2.6"
 local SCRIPT_FILE = "BackSoyer.lua"
 local CONFIG_FILE = "BackSoyer_config.json"
 -- ชื่อเดิมตอนยังเป็น Mine Hub (อ่านค่าเก่าต่อได้ + เข้าเกมใหม่แล้วรันไฟล์เก่าได้ถ้ายังไม่ได้เซฟชื่อใหม่)
@@ -145,6 +145,9 @@ local DEFAULTS = {
 	webhookUrl = "",
 	webhookAlerts = true,
 	webhookEvery = 30,
+	webhookLive = true,
+	-- id ข้อความสดใน Discord + ลิงก์ Webhook ที่ใช้ (แก้ข้อความเดิมต่อได้หลังเข้าเซิร์ฟใหม่)
+	webhookLiveId = "",
 	alertMinRarity = "Legendary",
 }
 
