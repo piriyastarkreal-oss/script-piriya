@@ -1,5 +1,5 @@
 --[[
-	Back Soyer · All-in-One AFK  (v2.3)
+	Back Soyer · All-in-One AFK  (v2.4)
 
 	วิธีใช้
 	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
@@ -17,7 +17,7 @@
 	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
 ]]
 
-local VERSION = "2.3"
+local VERSION = "2.4"
 local SCRIPT_FILE = "BackSoyer.lua"
 local CONFIG_FILE = "BackSoyer_config.json"
 -- ชื่อเดิมตอนยังเป็น Mine Hub (อ่านค่าเก่าต่อได้ + เข้าเกมใหม่แล้วรันไฟล์เก่าได้ถ้ายังไม่ได้เซฟชื่อใหม่)
@@ -69,9 +69,11 @@ local DEFAULTS = {
 	quickTp = true,
 	returnHome = true,
 	hopWait = 0.25,
+	-- รุ่นของไฟล์ค่า (ใช้ย้ายค่าเก่าตอนอัปเดตสคริปต์)
+	configRev = 2,
 	-- Upgrades
 	autoUpgrade = true,
-	upgradeMode = "progress",
+	upgradeMode = "value",
 	reservePct = 0,
 	upgradeEvery = 10,
 	up_OreValue = true,
@@ -90,6 +92,9 @@ local DEFAULTS = {
 	store_PetSpace = true,
 	store_EggSpace = true,
 	store_SpeedBoots = false,
+	autoGrade = false,
+	gradeTarget = "A",
+	gradeMaxSpendPct = 30,
 	-- Roll
 	autoRoll = true,
 	smartBuy = true,
@@ -143,10 +148,12 @@ local canFile = typeof(writefile) == "function" and typeof(readfile) == "functio
 local config = table.clone(DEFAULTS)
 
 do
+	local savedRev = 0
 	local function applySaved(data)
 		if type(data) ~= "table" then
 			return
 		end
+		savedRev = math.max(savedRev, tonumber(data.configRev) or 0)
 		for key, value in data do
 			if DEFAULTS[key] ~= nil and type(value) == type(DEFAULTS[key]) then
 				config[key] = value
@@ -171,6 +178,10 @@ do
 		if ok then
 			applySaved(data)
 		end
+	end
+	-- ค่าจากรุ่นก่อน v2.4 ที่ยังเป็นค่าเริ่มต้นเดิม (เก็บเงินขยายก่อน) ย้ายไปโหมดคุ้มสุดครั้งเดียว
+	if savedRev < 2 and config.upgradeMode == "progress" then
+		config.upgradeMode = "value"
 	end
 end
 
@@ -606,7 +617,8 @@ end
 
 type Row = { setStatus: (string?, Color3?) -> (), set: (boolean) -> () }
 -- ของที่ซื้อได้: place = ป้าย/ร้านที่ต้องไปยืน (ซื้อหลายอย่างที่เดียวกันได้ในการวาปครั้งเดียว), spot = จุดยืน
-type Candidate = { name: string, title: string?, cost: number, big: boolean?, place: any, spot: (() -> CFrame?)?, buy: () -> boolean }
+-- gain = ซื้อแล้วรายได้เพิ่มประมาณกี่เท่า (0.03 = +3%) ใช้กับโหมดคุ้มสุด
+type Candidate = { name: string, title: string?, cost: number, gain: number?, big: boolean?, place: any, spot: (() -> CFrame?)?, buy: () -> boolean }
 type MinerInfo = { key: string, name: string, rarity: string, tier: number, price: number, mut: any, revealAt: number, rollId: any, power: number? }
 
 local function new(className: string, props: { [string]: any }?, children: { Instance }?): any
@@ -1604,7 +1616,7 @@ local toastHolder = new("Frame", {
 	}),
 })
 local toastCount = 0
-local function toast(message: string, color: Color3?)
+local function toast(message: string, color: Color3?, duration: number?)
 	if not config.toasts then
 		return
 	end
@@ -1644,7 +1656,7 @@ local function toast(message: string, color: Color3?)
 		end)
 		frames[1]:Destroy()
 	end
-	task.delay(5, function()
+	task.delay(duration or 5, function()
 		if not frame.Parent then
 			return
 		end
@@ -1698,7 +1710,61 @@ local counters = {
 	spins = 0,
 	potions = 0,
 	indexNew = 0,
+	gradeRolls = 0,
 }
+
+-- สถิติทั้งรอบ AFK: บันทึกลงไฟล์ทุก 30 วิ ไม่หายตอนหลุด / เข้าเซิร์ฟใหม่
+-- (ไฟล์ล่าสุดเก่ากว่า 30 นาที = เริ่มรอบใหม่) · away = ภาพรวมตอนเริ่มไม่ได้แตะเครื่อง ไว้ทำสรุปตอนกลับมา
+local run = { file = "BackSoyer_run.json", startedAt = os.time(), rejoins = 0, base = { earned = 0, spent = 0 }, baseCounters = {}, away = nil :: any }
+do
+	if canFile then
+		local ok, data = pcall(function()
+			return if isfile(run.file) then HttpService:JSONDecode(readfile(run.file)) else nil
+		end)
+		if ok and type(data) == "table" and os.time() - num(data.savedAt) <= 30 * 60 then
+			run.startedAt = num(data.startedAt, os.time())
+			run.rejoins = num(data.rejoins)
+			run.base.earned = num(data.earned)
+			run.base.spent = num(data.spent)
+			run.baseCounters = if type(data.counters) == "table" then data.counters else {}
+			run.away = if type(data.away) == "table" then data.away else nil
+		end
+	end
+end
+
+-- ยอดรวมทั้งรอบ = ที่บันทึกไว้ + ของสคริปต์รอบนี้
+function run.totals(): { [string]: number }
+	local totals = { earned = run.base.earned + session.earned, spent = run.base.spent + session.spent, rejoins = run.rejoins }
+	for key, value in counters do
+		totals[key] = num(run.baseCounters[key]) + value
+	end
+	return totals
+end
+
+function run.save()
+	if not canFile then
+		return
+	end
+	local totals = run.totals()
+	local counterData = {}
+	for key in counters do
+		counterData[key] = totals[key]
+	end
+	pcall(function()
+		writefile(
+			run.file,
+			HttpService:JSONEncode({
+				startedAt = run.startedAt,
+				savedAt = os.time(),
+				rejoins = run.rejoins,
+				earned = totals.earned,
+				spent = totals.spent,
+				counters = counterData,
+				away = run.away,
+			})
+		)
+	end)
+end
 
 connect(localPlayer:GetAttributeChangedSignal("Cash"), function()
 	local now = cash()
@@ -1712,10 +1778,15 @@ connect(localPlayer:GetAttributeChangedSignal("Cash"), function()
 end)
 
 task.spawn(function()
+	local ticks = 0
 	while running do
 		table.insert(session.samples, { os.clock(), session.earned })
 		while #session.samples > 31 do
 			table.remove(session.samples, 1)
+		end
+		ticks += 1
+		if ticks % 3 == 0 then
+			run.save()
 		end
 		task.wait(10)
 	end
@@ -1977,6 +2048,98 @@ end
 local function bagFull(): boolean
 	local count, cap = bag.count, bag.cap
 	return count ~= nil and cap ~= nil and count >= cap
+end
+
+-- แรงขุดของ miner + ทีมที่ทำงานที่ประตู (ใช้ทั้งระบบสุ่มซื้อ / อัพเกรดแบบคุ้มสุด / Auto Grade)
+local team = { Traits = safeRequire("Traits"), Grades = safeRequire("Grades") }
+
+-- แรงขุดโดยประมาณ (ore/นาที) ด้วยสูตรของเกมเอง: Traits.minerPower(tier, ตัวคูณเกรด, ขนาด, mutation, คุณภาพ)
+function team.powerOf(tier: number, gradeMult: number, size: any, mut: any, q: any): number?
+	local traits = team.Traits
+	if not (traits and traits.minerPower) then
+		return nil
+	end
+	local ok, value = pcall(traits.minerPower, tier, gradeMult, size, if mut == "" then nil else mut, q)
+	return if ok and type(value) == "number" then value else nil
+end
+
+-- tier ของ miner: ตาม rarity ของโมเดล (หรือ tier ที่ติดมากับตัว เช่นจากกล่อง Robux)
+function team.tierOf(item: any): number?
+	if type(item.tier) == "number" and item.tier > 0 then
+		return item.tier
+	end
+	local folder = getMinerModels()
+	local model = folder and folder:FindFirstChild(tostring(item.id))
+	local def = model and MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[model:GetAttribute("Rarity")]
+	return def and def.tier
+end
+
+function team.gradeMult(grade: any): number
+	local grades = team.Grades
+	if grades and grades.mult then
+		local ok, value = pcall(grades.mult, grade)
+		if ok and type(value) == "number" then
+			return value
+		end
+	end
+	return 1
+end
+
+-- แรงขุดของ miner ในกระเป๋า (ข้อมูลจาก BagSync: id / size / mut / q / grade / power)
+function team.ownedPower(item: any): number?
+	local tier = team.tierOf(item)
+	local value = tier and team.powerOf(tier, team.gradeMult(item.grade), item.size, item.mut, item.q)
+	return value or tonumber(item.power)
+end
+
+-- ช่องทำงาน = ประตูเหมืองของเราที่ปลดล็อกแล้ว (miner ที่วางที่ประตูเท่านั้นที่ขุดจริง ประตูละ 1 ตัว)
+function team.slots(): number
+	local plot = plotId()
+	local ok, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
+	local count = 0
+	if ok and plot ~= nil then
+		for _, door in doors do
+			if tostring(door:GetAttribute("Mine")) == tostring(plot) and door:GetAttribute("Locked") ~= true then
+				count += 1
+			end
+		end
+	end
+	return count
+end
+
+-- สรุปทีม (N = จำนวนประตู): เกณฑ์ = แรงของตัวที่อ่อนสุดใน N ตัวแรก (0 = ประตูยังว่าง ตัวไหนก็ช่วย),
+-- จำนวนช่อง, แรงรวมของทีม, แรงของตัวสำรองที่ดีที่สุด (นอนในกระเป๋า) · เกณฑ์เป็น nil = ยังไม่มีข้อมูลกระเป๋า
+function team.summary(): (number?, number, number, number)
+	local list = bag.list
+	if type(list) ~= "table" then
+		return nil, 0, 0, 0
+	end
+	local slots = team.slots()
+	local working = 0
+	local powers = {}
+	for _, item in list do
+		if type(item) == "table" and item.id ~= nil then
+			if item.door ~= nil then
+				working += 1
+			end
+			local value = team.ownedPower(item)
+			if value then
+				table.insert(powers, value)
+			end
+		end
+	end
+	slots = math.max(slots, working)
+	if slots == 0 then
+		return nil, 0, 0, 0
+	end
+	table.sort(powers, function(a, b)
+		return a > b
+	end)
+	local total = 0
+	for index = 1, math.min(slots, #powers) do
+		total += powers[index]
+	end
+	return (if #powers >= slots then powers[slots] else 0), slots, total, powers[slots + 1] or 0
 end
 
 ---------------------------------------------------------------------
@@ -2395,8 +2558,8 @@ function setup.upgrades()
 		upgradePage,
 		"upgradeMode",
 		"วิธีเลือกซื้อ",
-		"เก็บเงินขยายก่อน = ถ้าขยายเหมือง/Quarry/ประตู/Pedestal ใกล้ซื้อได้ (ราคาไม่เกิน 4 เท่าของเงิน) จะหยุดซื้ออย่างอื่นเพื่อเก็บเงิน · ถูกสุดก่อน = ซื้ออะไรก็ได้ที่ถูกที่สุด",
-		{ { value = "progress", label = "เก็บเงินขยายก่อน" }, { value = "cheapest", label = "ถูกสุดก่อน" } }
+		"คุ้มสุด = ประเมินว่าแต่ละอย่างเพิ่มรายได้กี่ % แล้วซื้ออันที่ (เวลารอเงิน + เวลาคืนทุน) สั้นสุด รู้เองว่าคนขนแร่/Stock เป็นคอขวดไหม และประตูใหม่มีค่าแค่ไหน · เก็บเงินขยายก่อน = ขยายเหมือง/Quarry/ประตู/Pedestal ใกล้ซื้อได้จะเก็บเงินรอ · ถูกสุดก่อน = ซื้ออันที่ถูกสุด",
+		{ { value = "value", label = "คุ้มสุด" }, { value = "progress", label = "เก็บเงินขยายก่อน" }, { value = "cheapest", label = "ถูกสุดก่อน" } }
 	)
 	stepperRow(upgradePage, "reservePct", "กันเงินไว้", "ไม่ใช้เงินส่วนนี้ซื้ออัพเกรด", 0, 90, 5, function(value)
 		return value .. "%"
@@ -2545,8 +2708,168 @@ function setup.upgrades()
 		return num(pAttr("Up_" .. stat))
 	end
 
+	-- โหมดคุ้มสุด: ซื้อแต่ละอย่างแล้วรายได้เพิ่มกี่ % (ใช้สูตรจากโมดูล Upgrades / Economy / MinerWork ของเกม)
+	-- คอขวด: กองแร่รอคนขน (Pile_*) ไม่เคยลดต่ำกว่า 2 รอบขนใน 2 นาที = คนขนไม่ทัน · Stock เกิน 85% = Stock เล็กไป
+	local roi = { samples = {} :: { { pile: number, fill: number } }, pile = 0, fill = 0, pileStuck = false, stockFull = false, top = {} :: { any }, topAt = 0 }
+	-- { ฟังก์ชันในโมดูล Upgrades, ส่วนที่มีผลกับรายได้จริง }: ขุดเร็วขึ้นช่วยแค่ช่วงขุด (~1/4 ของรอบเดิน-ขุด-เดินกลับ)
+	roi.STAT = {
+		OreValue = { fn = "oreMult", share = 1 },
+		MineSpeed = { fn = "mineMult", share = 0.25 },
+		WalkSpeed = { fn = "walkMult", share = 0.3 },
+		RollLuck = { fn = "luck", share = 0.3 },
+		StockCap = { fn = "stockCap", share = 0.5 },
+		HaulSpeed = { fn = "haulMult", share = 0.8 },
+		HaulCarry = { fn = "haulCarry", share = 0.8 },
+	}
+
+	-- ค่าเลเวลถัดไปเทียบเลเวลนี้ - 1 (Ore Value = 0.03 ทุกเลเวล)
+	function roi.ratio(fnName: string, level: number): number
+		local fn = Upgrades and Upgrades[fnName]
+		if type(fn) ~= "function" then
+			return 0.01
+		end
+		local ok, now, nextValue = pcall(function()
+			return fn(level), fn(level + 1)
+		end)
+		if not ok or type(now) ~= "number" or type(nextValue) ~= "number" or now <= 0 then
+			return 0.01
+		end
+		return math.max(nextValue / now - 1, 0)
+	end
+
+	-- เก็บตัวอย่างกองแร่ / Stock ทุก 30 วิ ย้อนหลัง 3 นาที
+	function roi.sample()
+		local pile = 0
+		for name, amount in localPlayer:GetAttributes() do
+			if type(amount) == "number" and string.sub(name, 1, 5) == "Pile_" then
+				pile += amount
+			end
+		end
+		local fill = 0
+		local stockModel = myBuilding("Stock")
+		if stockModel then
+			local stored = 0
+			for _, amount in decode(stockModel:GetAttribute("Stock")) do
+				stored += num(amount)
+			end
+			local cap = num(stockModel:GetAttribute("CrateSize")) * ((Upgrades and Upgrades.STOCK_CRATES) or 54)
+			if cap <= 0 and Upgrades and Upgrades.stockCap then
+				local ok, result = pcall(Upgrades.stockCap, statLevel("StockCap", myBoard("Stock")))
+				cap = if ok then num(result) else 0
+			end
+			fill = if cap > 0 then stored / cap else 0
+		end
+		roi.pile, roi.fill = pile, fill
+		table.insert(roi.samples, { pile = pile, fill = fill })
+		while #roi.samples > 6 do
+			table.remove(roi.samples, 1)
+		end
+		local carry = 10
+		if Upgrades and Upgrades.haulCarry then
+			local ok, result = pcall(Upgrades.haulCarry, statLevel("HaulCarry", myBoard("Stock")))
+			carry = if ok then num(result, carry) else carry
+		end
+		local lowest, fullest = math.huge, 0
+		for _, sample in roi.samples do
+			lowest = math.min(lowest, sample.pile)
+			fullest = math.max(fullest, sample.fill)
+		end
+		roi.pileStuck = #roi.samples >= 4 and lowest >= carry * 2
+		roi.stockFull = fullest >= 0.85
+	end
+	startLoop("Upgrade Flow", nil, 30, nil, roi.sample)
+
+	function roi.statGain(stat: string, level: number): number
+		local def = roi.STAT[stat]
+		if not def then
+			return 0
+		elseif stat == "RollLuck" and not (config.autoRoll or config.autoIndex) then
+			return 0
+		elseif (stat == "HaulSpeed" or stat == "HaulCarry") and not roi.pileStuck then
+			return 0.002
+		elseif stat == "StockCap" and not roi.stockFull then
+			return 0.002
+		end
+		local gain = roi.ratio(def.fn, level) * def.share
+		-- คนขนไม่ทันอยู่แล้ว miner ขุดเร็วขึ้นก็แค่ทำให้กองแร่สูงขึ้น
+		if roi.pileStuck and (stat == "MineSpeed" or stat == "WalkSpeed") then
+			gain *= 0.1
+		end
+		return gain
+	end
+
+	-- ประตูใหม่ = ช่องทำงานเพิ่ม 1 ช่อง: ค่า = แรงตัวสำรองที่ดีสุด (ไม่มีตัวสำรอง = ครึ่งหนึ่งของตัวที่อ่อนสุด ต้องสุ่มซื้อเพิ่ม)
+	-- เทียบแรงทั้งทีม · ยังมีประตูว่างอยู่ = ประตูใหม่ยังไม่ช่วย
+	function roi.doorGain(): number
+		local threshold, _, total, spare = team.summary()
+		if threshold == nil or total <= 0 then
+			return 0.1
+		elseif threshold <= 0 then
+			return 0
+		end
+		return (if spare > 0 then spare else threshold * 0.5) / total
+	end
+
+	-- ขยายเหมือง: ประตูปลดล็อกหมดแล้ว = ทางเดียวที่จะได้ประตูเพิ่ม · คนขนแร่ +1 ทุก 2 ชั้น (MinerWork.haulers)
+	function roi.mineGain(board: Instance, lockedDoors: number): number
+		local level = num(board:GetAttribute("Level"), 1)
+		local gain = if lockedDoors == 0 then roi.doorGain() * 0.5 else 0.01
+		if roi.pileStuck then
+			gain += ((level // 2 + 1) / ((level - 1) // 2 + 1) - 1) * 0.8
+		end
+		return gain
+	end
+
+	-- Quarry: แร่ชนิดใหม่แพงกว่าเดิมกี่ % (คิดครึ่งเดียว เผื่อไม่ได้เปลี่ยนแร่ทุกประตู)
+	function roi.quarryGain(board: Instance): number
+		local ok, now, nextValue = pcall(function()
+			return Economy.oreValue(board:GetAttribute("Ore")), Economy.oreValue(board:GetAttribute("NextOre"))
+		end)
+		if ok and type(now) == "number" and type(nextValue) == "number" and now > 0 and nextValue > now then
+			return math.min(nextValue / now - 1, 1) * 0.5
+		end
+		return 0.25
+	end
+
+	function roi.income(): number
+		return math.max(ratePerMinute(), num(pAttr("IncomePerMin")), 30) / 60
+	end
+
+	function roi.pct(gain: number?): string
+		local value = (gain or 0) * 100
+		return if value >= 10 then string.format("+%d%%", math.floor(value + 0.5)) else string.format("+%.1f%%", value)
+	end
+
+	function roi.span(seconds: number): string
+		if seconds < 90 then
+			return math.max(1, math.floor(seconds)) .. " วิ"
+		elseif seconds < 90 * 60 then
+			return math.floor(seconds / 60 + 0.5) .. " นาที"
+		elseif seconds < 48 * 3600 then
+			return string.format("%.1f ชม.", seconds / 3600)
+		end
+		return math.floor(seconds / 86400 + 0.5) .. " วัน"
+	end
+
+	-- ซื้อไม่สำเร็จ: พักของชิ้นนั้น 30 วิ ถ้าวาปไปยืนแล้วก็ยังไม่ได้ พักทั้งป้าย 30 วิ
+	local failedUpgrades: { [string]: number } = {}
+	local failedPlaces: { [any]: number } = {}
+
+	local function usable(item: Candidate): boolean
+		local now = os.clock()
+		return (failedUpgrades[item.name] or 0) < now and (item.place == nil or (failedPlaces[item.place] or 0) < now)
+	end
+
 	-- ป้ายแบบเลเวล (Expand Mine / Upgrade Quarry / Pedestals)
-	local function boardCandidate(list: { Candidate }, kind: string, levelAttr: string, defaultMax: number, remoteName: string, label: (Instance, number) -> string)
+	local function boardCandidate(
+		list: { Candidate },
+		kind: string,
+		levelAttr: string,
+		defaultMax: number,
+		remoteName: string,
+		label: (Instance, number) -> string,
+		gainOf: (Instance) -> number
+	)
 		local board = myBoard(kind)
 		local idAttr = BOARD_ID_ATTR[kind]
 		if not board or not idAttr or board:GetAttribute("Busy") == true then
@@ -2563,6 +2886,7 @@ function setup.upgrades()
 			name = name,
 			title = name,
 			cost = cost,
+			gain = gainOf(board),
 			big = true,
 			place = board,
 			spot = function()
@@ -2596,6 +2920,7 @@ function setup.upgrades()
 						name = string.format("%s Lv.%d", title, level + 1),
 						title = title,
 						cost = cost,
+						gain = roi.statGain(stat, level),
 						place = board,
 						spot = function()
 							return if board then boardSpot(board) else nil
@@ -2613,34 +2938,25 @@ function setup.upgrades()
 			end
 		end
 
-		if config.upMine then
-			boardCandidate(list, "Mine", "Level", 10, "MineUpgradeRequest", function(_, level)
-				return string.format("Expand Mine → Floor %d", level + 1)
-			end)
-		end
-		if config.upQuarry then
-			boardCandidate(list, "Quarry", "Level", 10, "QuarryUpgradeRequest", function(board, level)
-				return "Upgrade Quarry → " .. tostring(board:GetAttribute("NextOre") or ("Lv." .. (level + 1)))
-			end)
-		end
-		if config.upPedestal then
-			boardCandidate(list, "Roll", "Count", 6, "RollAreaRequest", function(_, count)
-				return string.format("Pedestal %d → %d", count, count + 1)
-			end)
-		end
-
-		-- ประตูในเหมือง
-		if config.upDoors then
-			local plot = plotId()
-			local ok, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
-			if ok and plot ~= nil then
-				for _, door in doors do
-					if door:GetAttribute("Locked") == true and tostring(door:GetAttribute("Mine")) == tostring(plot) then
-						local doorName = "ปลดล็อกประตู " .. tostring(door:GetAttribute("DoorKey"))
+		-- ประตูในเหมือง: นับประตูที่ยังล็อกและซื้อได้ไว้ด้วย (ใช้ประเมินค่าการขยายเหมือง
+		-- ประตูที่เพิ่งซื้อไม่สำเร็จไม่นับ เผื่อเป็นประตูของชั้นที่ยังไม่ได้ขยาย)
+		local lockedDoors = 0
+		local doorGain = roi.doorGain()
+		local plot = plotId()
+		local okDoors, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
+		if okDoors and plot ~= nil then
+			for _, door in doors do
+				if door:GetAttribute("Locked") == true and tostring(door:GetAttribute("Mine")) == tostring(plot) then
+					local doorName = "ปลดล็อกประตู " .. tostring(door:GetAttribute("DoorKey"))
+					if (failedUpgrades[doorName] or 0) < os.clock() then
+						lockedDoors += 1
+					end
+					if config.upDoors then
 						table.insert(list, {
 							name = doorName,
 							title = doorName,
 							cost = num(door:GetAttribute("UnlockCost")),
+							gain = doorGain,
 							big = true,
 							place = door,
 							spot = function()
@@ -2656,6 +2972,26 @@ function setup.upgrades()
 					end
 				end
 			end
+		end
+
+		if config.upMine then
+			boardCandidate(list, "Mine", "Level", 10, "MineUpgradeRequest", function(_, level)
+				return string.format("Expand Mine → Floor %d", level + 1)
+			end, function(board)
+				return roi.mineGain(board, lockedDoors)
+			end)
+		end
+		if config.upQuarry then
+			boardCandidate(list, "Quarry", "Level", 10, "QuarryUpgradeRequest", function(board, level)
+				return "Upgrade Quarry → " .. tostring(board:GetAttribute("NextOre") or ("Lv." .. (level + 1)))
+			end, roi.quarryGain)
+		end
+		if config.upPedestal then
+			boardCandidate(list, "Roll", "Count", 6, "RollAreaRequest", function(_, count)
+				return string.format("Pedestal %d → %d", count, count + 1)
+			end, function()
+				return if config.autoRoll then 0.03 else 0
+			end)
 		end
 
 		-- อัพเกรดฟาร์ม
@@ -2677,6 +3013,7 @@ function setup.upgrades()
 							name = string.format("%s Lv.%d", title, level + 1),
 							title = title,
 							cost = cost,
+							gain = if config.autoHatch then 0.01 else 0.002,
 							place = board,
 							spot = function()
 								return boardSpot(board)
@@ -2697,6 +3034,8 @@ function setup.upgrades()
 		if GeneralStore and GeneralStore.BY_ID then
 			local owned = decode(pAttr("Store"))
 			local income = num(pAttr("IncomePerMin"), 30)
+			-- กระเป๋า miner ใกล้เต็ม = สุ่มซื้อตัวใหม่ไม่ได้ ช่องเพิ่มมีค่ามาก · ที่เหลือซื้อตอนราคาถูกมากเท่านั้น
+			local bagFill = if bag.count and bag.cap and bag.cap > 0 then bag.count / bag.cap else 0
 			for _, id in { "BagSpace", "PetSpace", "EggSpace", "SpeedBoots" } do
 				local item = GeneralStore.BY_ID[id]
 				local have = num(owned[id])
@@ -2707,6 +3046,7 @@ function setup.upgrades()
 							name = string.format("%s %d/%s", item.name or id, have + 1, tostring(item.max or "?")),
 							title = item.name or id,
 							cost = price,
+							gain = if id == "BagSpace" then (if bagFill >= 0.85 then 0.05 else 0.003) elseif id == "SpeedBoots" then 0 else 0.003,
 							place = "GeneralStore",
 							spot = function()
 								return hubSpot("GeneralShop", "OpenStore")
@@ -2726,13 +3066,22 @@ function setup.upgrades()
 		return list
 	end
 
-	-- ซื้อไม่สำเร็จ: พักของชิ้นนั้น 30 วิ ถ้าวาปไปยืนแล้วก็ยังไม่ได้ พักทั้งป้าย 30 วิ
-	local failedUpgrades: { [string]: number } = {}
-	local failedPlaces: { [any]: number } = {}
-
-	local function usable(item: Candidate): boolean
-		local now = os.clock()
-		return (failedUpgrades[item.name] or 0) < now and (item.place == nil or (failedPlaces[item.place] or 0) < now)
+	-- จัดอันดับโหมดคุ้มสุด: คะแนน = เวลารอเงิน + เวลาคืนทุน (วินาที) น้อยสุดคืออันดับ 1
+	-- ของไกลแต่คุ้มมาก (เช่นประตู) ชนะของถูกที่คุ้มน้อยได้เอง และไม่โดนของถูกแย่งเงินไปตลอด
+	function roi.rank(list: { Candidate }, spendable: number, income: number): { any }
+		local ranked = {}
+		for _, item in list do
+			local gain = item.gain or 0
+			if gain > 0 and usable(item) then
+				local wait = math.max(0, item.cost - spendable) / income
+				local payback = item.cost / (gain * income)
+				table.insert(ranked, { item = item, score = wait + payback, payback = payback, wait = wait })
+			end
+		end
+		table.sort(ranked, function(a, b)
+			return a.score < b.score
+		end)
+		return ranked
 	end
 
 	-- เลือกของที่จะซื้อตามโหมด: คืน (ของที่จะซื้อ, ข้อความสถานะ, สี)
@@ -2750,6 +3099,35 @@ function setup.upgrades()
 		table.sort(list, function(a, b)
 			return a.cost < b.cost
 		end)
+		if config.upgradeMode == "value" then
+			local income = roi.income()
+			-- ของราคาไม่ถึง 20 วิของรายได้ ซื้อเลย (ไม่ทำให้ของชิ้นใหญ่ช้าลงเท่าไหร่)
+			for _, item in list do
+				if item.cost <= income * 20 and item.cost <= spendable and usable(item) then
+					return item
+				end
+			end
+			local ranked = roi.rank(list, spendable, income)
+			roi.top, roi.topAt = ranked, os.clock()
+			local best = ranked[1]
+			if not best then
+				return nil, "ตอนนี้ไม่มีอะไรที่ซื้อแล้วเพิ่มรายได้ (ที่เหลือจะซื้อตอนราคาถูกมาก)", Theme.sub
+			end
+			if best.item.cost <= spendable then
+				return best.item
+			end
+			return nil,
+				string.format(
+					"เก็บเงินรอ %s (%s รายได้ · คืนทุน ~%s) อีก ~%s · %s / %s",
+					best.item.name,
+					roi.pct(best.item.gain),
+					roi.span(best.payback),
+					roi.span(best.wait),
+					fmtCash(money),
+					fmtCash(best.item.cost)
+				),
+				Theme.info
+		end
 		if config.upgradeMode == "progress" then
 			for _, item in list do
 				if item.big and usable(item) then
@@ -2793,7 +3171,7 @@ function setup.upgrades()
 
 		-- วาปไปป้ายแล้วซื้อรวดเดียว: ซื้อของถัดไปต่อเลย ถ้าอยู่ป้ายอื่นก็วาปต่อ (ไม่เกิน 10 วิต่อรอบ)
 		local bought, spent = 0, 0
-		local summary: { [string]: { count: number, cost: number, last: string, big: boolean? } } = {}
+		local summary: { [string]: { count: number, cost: number, gain: number, last: string, big: boolean? } } = {}
 		local order: { string } = {}
 		local problem: string? = nil
 		local lastName = ""
@@ -2836,12 +3214,13 @@ function setup.upgrades()
 					local key = item.title or item.name
 					local entry = summary[key]
 					if not entry then
-						entry = { count = 0, cost = 0, last = item.name, big = item.big }
+						entry = { count = 0, cost = 0, gain = 0, last = item.name, big = item.big }
 						summary[key] = entry
 						table.insert(order, key)
 					end
 					entry.count += 1
 					entry.cost += item.cost
+					entry.gain += item.gain or 0
 					entry.last = item.name
 					lastName = item.name
 				else
@@ -2864,14 +3243,15 @@ function setup.upgrades()
 
 		for _, key in order do
 			local entry = summary[key]
+			local gainText = if entry.gain >= 0.001 then " · รายได้ ~" .. roi.pct(entry.gain) else ""
 			if entry.count == 1 then
-				log("buy", string.format("ซื้อ %s (%s)", entry.last, fmtCash(entry.cost)))
+				log("buy", string.format("ซื้อ %s (%s)%s", entry.last, fmtCash(entry.cost), gainText))
 			else
-				log("buy", string.format("ซื้อ %s %d ครั้ง ถึง %s (รวม %s)", key, entry.count, entry.last, fmtCash(entry.cost)))
+				log("buy", string.format("ซื้อ %s %d ครั้ง ถึง %s (รวม %s)%s", key, entry.count, entry.last, fmtCash(entry.cost), gainText))
 			end
 			if entry.big then
 				toast("อัพเกรด " .. entry.last, Theme.info)
-				alert("⬆ อัพเกรดใหญ่", entry.last .. " (" .. fmtCash(entry.cost) .. ")", Theme.info)
+				alert("⬆ อัพเกรดใหญ่", entry.last .. " (" .. fmtCash(entry.cost) .. ")" .. gainText, Theme.info)
 			end
 		end
 		if bought > 0 then
@@ -2884,6 +3264,8 @@ function setup.upgrades()
 		end
 	end
 	startLoop("Auto Upgrade", "autoUpgrade", 1.2, upgradeRow, upgradeCycle)
+
+	setup.grade(upgradePage)
 
 	section(upgradePage, "ตรวจสอบ", "ถ้าอัพไม่ติด กดปุ่มนี้ดูว่าสคริปต์หาป้ายเจอ และยืนถูกที่ไหม (ผลอยู่ในแท็บ Log)")
 	buttonRow(upgradePage, {
@@ -2914,18 +3296,270 @@ function setup.upgrades()
 			local found = myBoard(kind) ~= nil
 			table.insert(parts, string.format("<font color=\"%s\">●</font> %s", colorHex(if found then Theme.good else Theme.bad), kind))
 		end
-		boardCard.Text = table.concat({
-			kv("BOARDS ", table.concat(parts, "   ")),
+		local lines = { kv("BOARDS ", table.concat(parts, "   ")) }
+		-- 3 อันดับที่คุ้มสุดตอนนี้ (คำนวณใหม่ทุก 3 วิ)
+		if config.upgradeMode == "value" then
+			if os.clock() - roi.topAt > 3 then
+				local spendable = cash() * (1 - config.reservePct / 100) - heldCash()
+				roi.top, roi.topAt = roi.rank(upgradeCandidates(), spendable, roi.income()), os.clock()
+			end
+			for index = 1, 3 do
+				local entry = roi.top[index]
+				if entry then
+					table.insert(
+						lines,
+						kv(
+							"TOP " .. index .. "  ",
+							string.format(
+								"%s   <font color=\"%s\">%s</font>   คืนทุน %s   <font color=\"%s\">%s</font>",
+								escapeRich(entry.item.name),
+								colorHex(Theme.good),
+								roi.pct(entry.item.gain),
+								roi.span(entry.payback),
+								colorHex(if entry.wait <= 0 then Theme.good else Theme.dim),
+								if entry.wait <= 0 then "ซื้อได้" else "รอเงิน " .. roi.span(entry.wait)
+							)
+						)
+					)
+				end
+			end
+		end
+		table.insert(
+			lines,
+			kv(
+				"FLOW   ",
+				string.format(
+					"กองแร่รอขน %d%s · Stock %d%%%s",
+					math.floor(roi.pile),
+					if roi.pileStuck then string.format(" <font color=\"%s\">คนขนไม่ทัน</font>", colorHex(Theme.accent)) else "",
+					math.floor(roi.fill * 100 + 0.5),
+					if roi.stockFull then string.format(" <font color=\"%s\">เกือบเต็ม</font>", colorHex(Theme.accent)) else ""
+				)
+			)
+		)
+		table.insert(
+			lines,
 			kv(
 				"SESSION",
 				string.format(
-					"อัพไปแล้ว %d ครั้ง · วาปไปซื้อ%s",
+					"อัพไปแล้ว %d ครั้ง · สุ่มเกรด %d ครั้ง · วาปไปซื้อ%s",
 					counters.upgrades,
+					counters.gradeRolls,
 					if config.upgradeEvery == 0 then "ทันทีที่มีเงิน" else "ทุก " .. config.upgradeEvery .. " วิ"
 				)
-			),
-		}, "\n")
+			)
+		)
+		boardCard.Text = table.concat(lines, "\n")
 	end
+end
+
+-- Auto Grade (อยู่ในแท็บ Upgrades): สุ่มเกรดให้ miner ที่ทำงานอยู่ที่ประตู ด้วยเงินในเกม (ไม่ใช้ Shards)
+-- เกมแจ้งไว้ว่าสุ่มแต่ละครั้งเกรดถูกแทนที่และลดลงได้ จึงเริ่มเฉพาะตอนงบพอสุ่มจนได้เป้าหมาย ~95% และหยุดทันทีที่ได้
+function setup.grade(page: Instance)
+	local grades = team.Grades
+
+	-- โอกาสได้เกรด key ขึ้นไปต่อการสุ่ม 1 ครั้ง (น้ำหนักของการสุ่มด้วยเงิน)
+	local function chanceAtLeast(key: string): number
+		if not (grades and grades.LIST and grades.RANK) then
+			return 0
+		end
+		local total, hit = 0, 0
+		for _, grade in grades.LIST do
+			local weight = num(grade.cash)
+			total += weight
+			if (grades.RANK[grade.key] or 0) >= (grades.RANK[key] or math.huge) then
+				hit += weight
+			end
+		end
+		return if total > 0 then hit / total else 0
+	end
+
+	local function avgRolls(key: string): string
+		local chance = chanceAtLeast(key)
+		return if chance > 0 then tostring(math.floor(1 / chance + 0.5)) else "?"
+	end
+
+	local function minerName(item: any): string
+		local folder = getMinerModels()
+		local model = folder and folder:FindFirstChild(tostring(item.id))
+		return tostring((model and model:GetAttribute("DisplayName")) or item.id)
+	end
+
+	section(
+		page,
+		"Auto Grade",
+		"สุ่มเกรดให้ miner ที่ทำงานอยู่ที่ประตู (ตัวแรงสุดก่อน) ด้วยเงินในเกม · สุ่มแต่ละครั้งเกรดถูกแทนที่และลดลงได้ สคริปต์จึงเริ่มเฉพาะตอนงบพอสุ่มจนได้เป้าหมาย (โอกาส ~95%) และหยุดทันทีที่ได้"
+	)
+	local gradeRow = toggleRow(page, "autoGrade", "Auto Grade", "ปิดไว้เป็นค่าเริ่มต้น · วาปไปร้าน Worker Grading แป๊บเดียวแล้ววาปกลับ")
+	local options = {}
+	for _, key in { "B", "A", "S" } do
+		table.insert(options, { value = key, label = string.format("%s  x%s", key, tostring(team.gradeMult(key))) })
+	end
+	choiceRow(
+		page,
+		"gradeTarget",
+		"เกรดเป้าหมาย",
+		string.format("ได้เกรดนี้หรือสูงกว่าแล้วหยุด · เฉลี่ยต้องสุ่ม B ~%s ครั้ง · A ~%s ครั้ง · S ~%s ครั้ง", avgRolls("B"), avgRolls("A"), avgRolls("S")),
+		options
+	)
+	stepperRow(page, "gradeMaxSpendPct", "งบต่อรอบ", "ใช้ไม่เกินกี่ % ของเงินที่มี ถ้าไม่พอสุ่มจนได้เป้าหมายจะรอเงินก่อน", 5, 100, 5, function(value)
+		return value .. "%"
+	end)
+
+	local lastGradeAt = 0
+
+	local function gradeCycle()
+		if not (grades and grades.RANK and grades.LIST) then
+			gradeRow.setStatus("โหลดข้อมูลเกรดของเกมไม่ได้", Theme.bad)
+			return
+		elseif pAttr("GradeAuto") == true then
+			gradeRow.setStatus("Auto Grade ของเกมกำลังทำงานอยู่ รอให้เสร็จก่อน", Theme.sub)
+			return
+		elseif not alive() then
+			gradeRow.setStatus("รอตัวละครเกิด...", Theme.sub)
+			return
+		elseif type(bag.list) ~= "table" or bag.at < lastGradeAt then
+			-- ต้องเห็นเกรดล่าสุดก่อน ไม่งั้นอาจสุ่มทับตัวที่เพิ่งได้เกรดดี
+			fire("BagAction", "sync")
+			gradeRow.setStatus("รอข้อมูลกระเป๋า miner...", Theme.sub)
+			return
+		end
+		local target = config.gradeTarget
+		local targetRank = grades.RANK[target] or 6
+
+		-- miner ที่ทำงานอยู่ (วางที่ประตู) แรงสุด ที่เกรดยังต่ำกว่าเป้า
+		local pick, pickPower = nil, -1
+		for _, item in bag.list do
+			if type(item) == "table" and item.door ~= nil and item.uid ~= nil and (grades.RANK[item.grade or ""] or 0) < targetRank then
+				local power = team.ownedPower(item) or 0
+				if power > pickPower then
+					pick, pickPower = item, power
+				end
+			end
+		end
+		if not pick then
+			gradeRow.setStatus(string.format("miner ที่ทำงานอยู่ได้เกรด %s ขึ้นไปครบแล้ว", target), Theme.good)
+			return
+		end
+
+		-- ราคาสุ่มต่อครั้งตาม tier ของ miner (ค่าเดียวกับที่หน้าร้านโชว์)
+		local cost = num(decode(pAttr("GradeCosts"))[team.tierOf(pick) or 1])
+		local chance = chanceAtLeast(target)
+		if cost <= 0 then
+			gradeRow.setStatus("ยังไม่รู้ราคาสุ่มเกรด (เกมยังไม่ส่งราคามา)", Theme.sub)
+			return
+		elseif chance <= 0 then
+			gradeRow.setStatus("เกรด " .. target .. " สุ่มด้วยเงินไม่ได้", Theme.bad)
+			return
+		end
+		local name = minerName(pick)
+		local needRolls = math.ceil(math.log(0.05) / math.log(1 - chance))
+		local budget = cash() * config.gradeMaxSpendPct / 100 - heldCash()
+		local maxRolls = math.floor(budget / cost)
+		if maxRolls < needRolls then
+			gradeRow.setStatus(
+				string.format(
+					"รอเงิน: %s → %s ต้องมีงบ ~%s (%d ครั้ง × %s) · งบตอนนี้ %s",
+					name,
+					target,
+					fmtCash(needRolls * cost),
+					needRolls,
+					fmtCash(cost),
+					fmtCash(math.max(budget, 0))
+				),
+				Theme.sub
+			)
+			return
+		end
+		local spot = hubSpot("WorkerShop", "OpenGrading")
+		if not spot then
+			gradeRow.setStatus("หาร้าน Worker Grading ไม่เจอ", Theme.bad)
+			return
+		end
+
+		local uid = pick.uid
+		local startGrade = pick.grade
+		local stopSet = {}
+		for _, key in grades.AUTO_STOP or {} do
+			stopSet[key] = true
+		end
+		local rolls, spent = 0, 0
+		local finalKey: string? = nil
+		local problem: string? = nil
+		withHops("Auto Grade: สุ่มเกรด " .. name, function(hopTo)
+			local justHopped = false
+			if not nearPos(spot.Position, 12) then
+				justHopped = hopTo(spot)
+				if not justHopped then
+					problem = "ต้องยืนที่ร้านถึงจะสุ่มได้: เปิด 'วาปไปกดแป๊บเดียว' ในแท็บ Farm"
+					return
+				end
+			end
+			local lastN = decode(pAttr("GradeResult")).n
+			local stopAt = os.clock() + 90
+			while running and not paused and config.autoGrade and rolls < maxRolls and os.clock() < stopAt do
+				if cash() - heldCash() < cost then
+					problem = "เงินไม่พอสุ่มต่อ"
+					break
+				end
+				local since = os.clock()
+				fire("GradeAction", "grade", uid, false, stopSet)
+				local got: string? = nil
+				local answered = waitFor(function()
+					local result = decode(pAttr("GradeResult"))
+					if result.n ~= nil and result.n ~= lastN then
+						lastN = result.n
+						if tostring(result.uid) == tostring(uid) then
+							got = result.key
+						end
+						return true
+					end
+					return false
+				end, 3)
+				if not (answered and got) then
+					if justHopped and rolls == 0 then
+						-- เพิ่งวาปมา เซิร์ฟเวอร์อาจยังไม่เห็นตำแหน่งใหม่: รอแป๊บแล้วลองอีกครั้ง
+						justHopped = false
+						task.wait(0.5)
+						continue
+					end
+					local notice = noticeSince(since)
+					problem = "เกมไม่ตอบรับการสุ่ม" .. (if notice then " (เกมแจ้ง: " .. notice .. ")" else "")
+					break
+				end
+				rolls += 1
+				spent += cost
+				counters.gradeRolls += 1
+				finalKey = got
+				setActivity(string.format("Auto Grade: %s ได้ %s (ครั้งที่ %d)", name, tostring(got), rolls))
+				if (grades.RANK[got or ""] or 0) >= targetRank then
+					break
+				end
+				-- รอให้เกมหมุนเกรดเสร็จก่อนกดครั้งถัดไป
+				task.wait(num(grades.ROLL_TIME, 0.6) + 0.1)
+			end
+		end)
+
+		if rolls == 0 then
+			if problem then
+				gradeRow.setStatus(problem, Theme.bad)
+			end
+			return
+		end
+		lastGradeAt = os.clock()
+		fire("BagAction", "sync")
+		local finalRank = grades.RANK[finalKey or ""] or 0
+		local report = string.format("%s: สุ่ม %d ครั้ง (%s) %s → %s", name, rolls, fmtCash(spent), tostring(startGrade or "-"), tostring(finalKey))
+		if finalRank >= targetRank then
+			log("good", "Auto Grade " .. report)
+			toast("ได้เกรด " .. tostring(finalKey) .. " · " .. name, Theme.good)
+			alert("⭐ ได้เกรด " .. tostring(finalKey), report, Theme.good)
+		else
+			log("warn", "Auto Grade " .. report .. " · ยังไม่ถึง " .. target .. " จะสุ่มต่อรอบหน้า")
+		end
+		gradeRow.setStatus(report .. (if problem then "\n⚠ " .. problem else ""), if finalRank >= targetRank then Theme.good else Theme.accent)
+	end
+	startLoop("Auto Grade", "autoGrade", 20, gradeRow, gradeCycle)
 end
 setup.upgrades()
 
@@ -2983,83 +3617,6 @@ function setup.roll()
 		return list, area
 	end
 
-	-- แรงขุดโดยประมาณ (ore/นาที) ด้วยสูตรของเกมเอง: Traits.minerPower(tier, ตัวคูณเกรด, ขนาด, mutation, คุณภาพ)
-	local Traits = safeRequire("Traits")
-	local Grades = safeRequire("Grades")
-	local function powerOf(tier: number, gradeMult: number, size: any, mut: any, q: any): number?
-		if not (Traits and Traits.minerPower) then
-			return nil
-		end
-		local ok, value = pcall(Traits.minerPower, tier, gradeMult, size, if mut == "" then nil else mut, q)
-		return if ok and type(value) == "number" then value else nil
-	end
-
-	-- แรงขุดของ miner ในกระเป๋า (ข้อมูลจาก BagSync: id / size / mut / q / grade / power)
-	local function ownedPower(item: any): number?
-		local folder = getMinerModels()
-		local model = folder and folder:FindFirstChild(tostring(item.id))
-		local def = model and MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[model:GetAttribute("Rarity")]
-		local tier = (type(item.tier) == "number" and item.tier > 0 and item.tier) or (def and def.tier)
-		if tier then
-			local gradeMult = 1
-			if Grades and Grades.mult then
-				local ok, value = pcall(Grades.mult, item.grade)
-				gradeMult = if ok and type(value) == "number" then value else 1
-			end
-			local value = powerOf(tier, gradeMult, item.size, item.mut, item.q)
-			if value then
-				return value
-			end
-		end
-		return tonumber(item.power)
-	end
-
-	-- ช่องทำงาน = ประตูเหมืองของเราที่ปลดล็อกแล้ว (miner ที่วางที่ประตูเท่านั้นที่ขุดจริง ประตูละ 1 ตัว)
-	local function workSlots(): number
-		local plot = plotId()
-		local ok, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
-		local count = 0
-		if ok and plot ~= nil then
-			for _, door in doors do
-				if tostring(door:GetAttribute("Mine")) == tostring(plot) and door:GetAttribute("Locked") ~= true then
-					count += 1
-				end
-			end
-		end
-		return count
-	end
-
-	-- เกณฑ์ของทีม = แรงขุดของตัวที่อ่อนสุดในทีมที่ดีที่สุด (N ตัวแรก, N = จำนวนประตู)
-	-- คืน 0 ถ้ายังมีประตูว่าง (ตัวไหนก็ช่วย) · nil ถ้ายังไม่มีข้อมูลกระเป๋า (ใช้ rarity ขั้นต่ำแทน)
-	local function teamThreshold(): (number?, number)
-		local list = bag.list
-		if type(list) ~= "table" then
-			return nil, 0
-		end
-		local slots = workSlots()
-		local working = 0
-		local powers = {}
-		for _, item in list do
-			if type(item) == "table" and item.id ~= nil then
-				if item.door ~= nil then
-					working += 1
-				end
-				local value = ownedPower(item)
-				if value then
-					table.insert(powers, value)
-				end
-			end
-		end
-		slots = math.max(slots, working)
-		if slots == 0 then
-			return nil, 0
-		end
-		table.sort(powers, function(a, b)
-			return a > b
-		end)
-		return (if #powers >= slots then powers[slots] else 0), slots
-	end
-
 	-- miner ที่แท่นโชว์อยู่: ชื่อ, rarity, ราคา (สูตรเดียวกับป้ายของเกม), แรงขุด
 	local function pedestalResult(pedestal: Instance): MinerInfo?
 		local key = pedestal:GetAttribute("Result") or ""
@@ -3087,7 +3644,7 @@ function setup.roll()
 			revealAt = num(pedestal:GetAttribute("RevealAt")),
 			rollId = pedestal:GetAttribute("RollId"),
 			power = if def and def.tier
-				then powerOf(def.tier, 1, pedestal:GetAttribute("ResultSize"), pedestal:GetAttribute("ResultMut"), pedestal:GetAttribute("ResultQ"))
+				then team.powerOf(def.tier, 1, pedestal:GetAttribute("ResultSize"), pedestal:GetAttribute("ResultMut"), pedestal:GetAttribute("ResultQ"))
 				else nil,
 		}
 	end
@@ -3124,7 +3681,7 @@ function setup.roll()
 			local byRarity = false
 			if config.autoRoll then
 				local def = MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[rarityName]
-				local bigPower = if config.smartBuy and threshold ~= nil and def and def.tier then powerOf(def.tier, 1, "Big", nil, 0) else nil
+				local bigPower = if config.smartBuy and threshold ~= nil and def and def.tier then team.powerOf(def.tier, 1, "Big", nil, 0) else nil
 				byRarity = if bigPower ~= nil then bigPower > (threshold :: number) else rarityTier(rarityName) >= minTier
 			end
 			for _, name in list do
@@ -3385,7 +3942,7 @@ function setup.roll()
 			if type(item) == "table" and item.uid ~= nil and item.id ~= nil and not item.fav and item.slot == nil and item.door == nil then
 				local model = folder and folder:FindFirstChild(tostring(item.id))
 				local tier = rarityTier(model and model:GetAttribute("Rarity"))
-				local power = ownedPower(item) or num(item.kg)
+				local power = team.ownedPower(item) or num(item.kg)
 				local spare = if config.smartBuy and threshold ~= nil then power < threshold else tier < minTier
 				if tier > 0 and spare then
 					table.insert(pool, { uid = item.uid, id = item.id, tier = tier, power = power })
@@ -3453,7 +4010,7 @@ function setup.roll()
 		local income = math.max(num(pAttr("IncomePerMin")), ratePerMinute())
 		local indexed = indexSets()
 		local full = bagFull()
-		local threshold = teamThreshold()
+		local threshold = team.summary()
 
 		local skipped: { [string]: boolean } = {} -- ตัวที่โชว์อยู่แต่ไม่ซื้อ (ไม่ส่งให้ Auto Roll ของเกมหา)
 		local needRoll: { Instance } = {} -- แท่นที่ต้องสุ่มใหม่: ว่าง / ตัวที่ไม่เอา / แพงเกินรอ
@@ -3652,7 +4209,7 @@ function setup.roll()
 		local now = workspace:GetServerTimeNow()
 		local minTier = rarityTier(config.rollMinRarity)
 		local indexed = indexSets()
-		local threshold, slots = teamThreshold()
+		local threshold, slots = team.summary()
 		local lines = {}
 		for _, pedestal in pedestals do
 			local info = pedestalResult(pedestal)
@@ -4579,6 +5136,20 @@ function setup.afk()
 		return "-"
 	end
 
+	-- ยอดทั้งรอบ AFK (นับรวมตอนหลุด/เข้าเซิร์ฟใหม่)
+	local function runText(): string
+		local totals = run.totals()
+		return string.format(
+			"%s ชม. · ได้ %s · miner %d (ใหม่ใน Index %d) · อัพเกรด %d · เข้าเซิร์ฟใหม่ %d ครั้ง",
+			fmtTime(os.time() - run.startedAt),
+			fmtCash(totals.earned),
+			totals.miners,
+			totals.indexNew,
+			totals.upgrades,
+			run.rejoins
+		)
+	end
+
 	local function summaryPayload(title: string): { [string]: any }
 		local minersHave, minersTotal, petsHave, petsTotal, sets = indexProgress()
 		local rate = ratePerMinute()
@@ -4594,18 +5165,20 @@ function setup.afk()
 			{
 				name = "📊 รอบนี้",
 				value = string.format(
-					"ขาย %d ครั้ง · อัพเกรด %d · ซื้อ miner %d (ใหม่ใน Index %d) · สุ่ม %d · ฟักไข่ %d",
+					"ขาย %d ครั้ง · อัพเกรด %d · ซื้อ miner %d (ใหม่ใน Index %d) · สุ่ม %d · สุ่มเกรด %d · ฟักไข่ %d",
 					counters.sell,
 					counters.upgrades,
 					counters.miners,
 					counters.indexNew,
 					counters.rolls,
+					counters.gradeRolls,
 					counters.hatched
 				),
 				inline = false,
 			},
 			{ name = "🕒 เปิดมาแล้ว", value = fmtTime(os.clock() - session.start), inline = true },
 			{ name = "🎒 กระเป๋า miner", value = bagText(), inline = true },
+			{ name = "🌙 ทั้งรอบ AFK", value = runText(), inline = false },
 		})
 	end
 
@@ -4630,7 +5203,7 @@ function setup.afk()
 				} do
 					config[key] = true
 				end
-				config.upgradeMode = "progress"
+				config.upgradeMode = "value"
 				if paused then
 					paused = false
 					chrome.pause.Text = "หยุดทั้งหมด"
@@ -4940,6 +5513,8 @@ function setup.afk()
 		end
 		rejoining = true
 		log("warn", "หลุดจากเกม (" .. reason .. ") กำลังเข้าใหม่...")
+		run.rejoins += 1
+		run.save()
 		if queueTeleport and canFile then
 			-- ไฟล์ชื่อใหม่ก่อน ถ้ายังไม่ได้เซฟชื่อใหม่ใช้ไฟล์ชื่อเดิม
 			for _, fileName in { SCRIPT_FILE, LEGACY_SCRIPT_FILE } do
@@ -5165,8 +5740,10 @@ function setup.afk()
 			clock.Text = os.date("%H:%M") .. "  ·  UP " .. fmtTime(os.clock() - session.start)
 			afkCash.Text = fmtCash(cash())
 			afkIncome.Text = string.format(
-				"+%s SESSION   ·   %s / HR%s",
+				"+%s SESSION   ·   +%s RUN %s   ·   %s / HR%s",
 				fmtCash(session.earned),
+				fmtCash(run.totals().earned),
+				fmtTime(os.time() - run.startedAt),
 				fmtCash(rate * 60),
 				if paused then string.format("   ·   <font color=\"%s\">PAUSED</font>", colorHex(Theme.accent)) else ""
 			)
@@ -5191,6 +5768,7 @@ function setup.afk()
 				{ "FARM", config.autoStock },
 				{ "UPGRADE", config.autoUpgrade },
 				{ "ROLL", config.autoRoll or config.autoIndex },
+				{ "GRADE", config.autoGrade },
 				{ "PETS", config.autoHatch },
 				{ "REWARDS", config.daily or config.quests },
 				{ "WATCHDOG", config.watchdog },
@@ -5220,6 +5798,42 @@ function setup.afk()
 				else string.format("<font color=\"%s\">ยังไม่มีเหตุการณ์สำคัญในรอบนี้</font>", colorHex(Theme.dim))
 		end
 
+		-- กลับมาหลังไม่อยู่ 20 นาทีขึ้นไป: สรุปว่าระหว่างนั้นได้อะไรบ้าง (นับรวมตอนหลุด/เข้าเซิร์ฟใหม่) + ส่งเข้า Discord
+		local function welcomeBack()
+			local away = run.away
+			if type(away) ~= "table" then
+				return
+			end
+			run.away = nil
+			run.save()
+			local seconds = os.time() - num(away.at)
+			if seconds < 20 * 60 then
+				return
+			end
+			local totals = run.totals()
+			local report = string.format(
+				"ไม่อยู่ %s · ได้ %s · miner ใหม่ %d (เข้า Index %d) · อัพเกรด %d · ฟักไข่ %d · เข้าเซิร์ฟใหม่ %d ครั้ง",
+				fmtTime(seconds),
+				fmtCash(totals.earned - num(away.earned)),
+				totals.miners - num(away.miners),
+				totals.indexNew - num(away.indexNew),
+				totals.upgrades - num(away.upgrades),
+				totals.hatched - num(away.hatched),
+				run.rejoins - num(away.rejoins)
+			)
+			log("good", "ยินดีต้อนรับกลับ: " .. report)
+			toast("ยินดีต้อนรับกลับ · " .. report, Theme.good, 15)
+			alert("🌅 สรุประหว่างไม่อยู่", report, Theme.good)
+		end
+
+		local function userActive()
+			lastInputAt = os.clock()
+			-- 15 วิแรกหลังเริ่มสคริปต์ไม่นับ กันอินพุตหลอกตอนเกมโหลดหลังเข้าเซิร์ฟใหม่
+			if run.away and os.clock() - session.start > 15 then
+				welcomeBack()
+			end
+		end
+
 		connect(backdrop.Activated, function()
 			setAfkScreen(false)
 		end)
@@ -5227,7 +5841,7 @@ function setup.afk()
 			if os.clock() < ignoreInputUntil then
 				return
 			end
-			lastInputAt = os.clock()
+			userActive()
 			if afkShown and os.clock() - afkShownAt > 0.5 then
 				setAfkScreen(false)
 			end
@@ -5237,7 +5851,7 @@ function setup.afk()
 				return
 			end
 			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-				lastInputAt = os.clock()
+				userActive()
 				-- จอที่ขึ้นเองปิดเมื่อขยับเมาส์ / จอที่กดเปิดเองปิดเมื่อกดปุ่มหรือคลิกเท่านั้น
 				if afkShown and afkAuto and os.clock() - afkShownAt > 1.5 then
 					setAfkScreen(false)
@@ -5246,6 +5860,21 @@ function setup.afk()
 		end)
 		task.spawn(function()
 			while running do
+				-- ไม่ได้แตะเครื่อง 10 นาที: จำภาพรวมไว้ทำสรุปตอนกลับมา (บันทึกลงไฟล์ ไม่หายตอนเข้าเซิร์ฟใหม่)
+				local idle = os.clock() - lastInputAt
+				if idle > 600 and run.away == nil then
+					local totals = run.totals()
+					run.away = {
+						at = os.time() - math.floor(idle),
+						earned = totals.earned,
+						miners = totals.miners,
+						upgrades = totals.upgrades,
+						indexNew = totals.indexNew,
+						hatched = totals.hatched,
+						rejoins = run.rejoins,
+					}
+					run.save()
+				end
 				if afkShown then
 					pcall(updateAfkScreen)
 				elseif config.afkScreenAuto and os.clock() - lastInputAt > config.afkScreenIdle * 60 then
@@ -5360,16 +5989,31 @@ function setup.log()
 	end)
 
 	refreshers.Log = function()
+		local totals = run.totals()
 		summaryLabel.Text = table.concat({
+			kv(
+				"RUN    ",
+				string.format(
+					"ทั้งรอบ AFK ตั้งแต่ %s (%s) · <font color=\"%s\">ได้ %s</font> · miner %d · อัพเกรด %d · เข้าเซิร์ฟใหม่ %d ครั้ง",
+					os.date("%H:%M", run.startedAt),
+					fmtTime(os.time() - run.startedAt),
+					colorHex(Theme.good),
+					fmtCash(totals.earned),
+					totals.miners,
+					totals.upgrades,
+					run.rejoins
+				)
+			),
 			kv("SESSION", fmtTime(os.clock() - session.start)),
 			kv("FARM   ", string.format("เก็บ Stock %d · หลอม %d · ขาย %d ครั้ง (%d กล่อง)", counters.take, counters.smelt, counters.sell, counters.sellCrates)),
 			kv(
 				"BUY    ",
 				string.format(
-					"อัพเกรด %d · miner %d · สุ่ม %d · ฟักไข่ %d · ซื้อไข่ %d",
+					"อัพเกรด %d · miner %d · สุ่ม %d · สุ่มเกรด %d · ฟักไข่ %d · ซื้อไข่ %d",
 					counters.upgrades,
 					counters.miners,
 					counters.rolls,
+					counters.gradeRolls,
 					counters.hatched,
 					counters.eggsBought
 				)
@@ -5508,6 +6152,7 @@ setup.refresh()
 ---------------------------------------------------------------------
 env.BackSoyer_Cleanup = function()
 	running = false
+	run.save()
 	for _, hook in cleanupHooks do
 		pcall(hook)
 	end
