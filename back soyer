@@ -92,6 +92,7 @@ local DEFAULTS = {
 	store_SpeedBoots = false,
 	-- Roll
 	autoRoll = true,
+	smartBuy = true,
 	rollMinRarity = "Rare",
 	rollMaxSpendPct = 80,
 	useGameAutoRoll = true,
@@ -606,7 +607,7 @@ end
 type Row = { setStatus: (string?, Color3?) -> (), set: (boolean) -> () }
 -- ของที่ซื้อได้: place = ป้าย/ร้านที่ต้องไปยืน (ซื้อหลายอย่างที่เดียวกันได้ในการวาปครั้งเดียว), spot = จุดยืน
 type Candidate = { name: string, title: string?, cost: number, big: boolean?, place: any, spot: (() -> CFrame?)?, buy: () -> boolean }
-type MinerInfo = { key: string, name: string, rarity: string, tier: number, price: number, mut: any, revealAt: number, rollId: any }
+type MinerInfo = { key: string, name: string, rarity: string, tier: number, price: number, mut: any, revealAt: number, rollId: any, power: number? }
 
 local function new(className: string, props: { [string]: any }?, children: { Instance }?): any
 	local inst = Instance.new(className)
@@ -2941,7 +2942,13 @@ function setup.roll()
 	)
 	local pedestalCard = liveCard(rollPage)
 	local rollRow = toggleRow(rollPage, "autoRoll", "Auto Roll", "ซื้อ miner ที่ต้องการให้เอง + สุ่มต่อให้")
-	cycleRow(rollPage, "rollMinRarity", "Rarity ขั้นต่ำที่จะซื้อ", "ต่ำกว่านี้ไม่ซื้อ (กันกระเป๋าเต็ม)", RARITY_NAMES, rarityColor)
+	toggleRow(
+		rollPage,
+		"smartBuy",
+		"ซื้อแบบฉลาด (ดูแรงขุด)",
+		"ซื้อเฉพาะตัวที่แรงกว่าตัวที่อ่อนสุดในทีม (miner ที่ประตูเหมือง) ใช้สูตรแรงขุดของเกมเอง คิดทั้ง rarity / ขนาด / mutation / คุณภาพ · ประตูยังว่าง = ตัวไหนก็ซื้อ · ตัวที่ยังไม่มีใน Index ซื้อเสมอ"
+	)
+	cycleRow(rollPage, "rollMinRarity", "Rarity ขั้นต่ำที่จะซื้อ", "ใช้ตอนปิด 'ซื้อแบบฉลาด' (หรือตอนยังโหลดข้อมูลกระเป๋าไม่เสร็จ)", RARITY_NAMES, rarityColor)
 	stepperRow(rollPage, "rollMaxSpendPct", "ใช้เงินได้ไม่เกิน", "ต่อ miner 1 ตัว เทียบกับเงินที่มี", 10, 100, 10, function(value)
 		return value .. "%"
 	end)
@@ -2957,7 +2964,7 @@ function setup.roll()
 		rollPage,
 		"bagAutoDelete",
 		"ลบ miner ที่แย่สุดเมื่อกระเป๋าเต็ม",
-		"ปิดไว้ก่อน (ลบแล้วเอาคืนไม่ได้) · ลบเฉพาะตัวที่ rarity ต่ำกว่าขั้นต่ำด้านบน ไม่ลบตัวโปรด ⭐ / ตัวบน hotbar / ตัวที่ทำงานที่ประตู และเหลือไว้อย่างน้อยชนิดละ 1 ตัว"
+		"ปิดไว้ก่อน (ลบแล้วเอาคืนไม่ได้) · ลบเฉพาะตัวที่ไม่ติดทีมที่ดีที่สุด (ซื้อแบบฉลาด) หรือ rarity ต่ำกว่าขั้นต่ำ ไม่ลบตัวโปรด ⭐ / ตัวบน hotbar / ตัวที่ทำงานที่ประตู และเหลือไว้อย่างน้อยชนิดละ 1 ตัว"
 	)
 
 	local function myPedestals(): ({ Instance }, Instance?)
@@ -2976,7 +2983,84 @@ function setup.roll()
 		return list, area
 	end
 
-	-- miner ที่แท่นโชว์อยู่: ชื่อ, rarity, ราคา (สูตรเดียวกับป้ายของเกม)
+	-- แรงขุดโดยประมาณ (ore/นาที) ด้วยสูตรของเกมเอง: Traits.minerPower(tier, ตัวคูณเกรด, ขนาด, mutation, คุณภาพ)
+	local Traits = safeRequire("Traits")
+	local Grades = safeRequire("Grades")
+	local function powerOf(tier: number, gradeMult: number, size: any, mut: any, q: any): number?
+		if not (Traits and Traits.minerPower) then
+			return nil
+		end
+		local ok, value = pcall(Traits.minerPower, tier, gradeMult, size, if mut == "" then nil else mut, q)
+		return if ok and type(value) == "number" then value else nil
+	end
+
+	-- แรงขุดของ miner ในกระเป๋า (ข้อมูลจาก BagSync: id / size / mut / q / grade / power)
+	local function ownedPower(item: any): number?
+		local folder = getMinerModels()
+		local model = folder and folder:FindFirstChild(tostring(item.id))
+		local def = model and MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[model:GetAttribute("Rarity")]
+		local tier = (type(item.tier) == "number" and item.tier > 0 and item.tier) or (def and def.tier)
+		if tier then
+			local gradeMult = 1
+			if Grades and Grades.mult then
+				local ok, value = pcall(Grades.mult, item.grade)
+				gradeMult = if ok and type(value) == "number" then value else 1
+			end
+			local value = powerOf(tier, gradeMult, item.size, item.mut, item.q)
+			if value then
+				return value
+			end
+		end
+		return tonumber(item.power)
+	end
+
+	-- ช่องทำงาน = ประตูเหมืองของเราที่ปลดล็อกแล้ว (miner ที่วางที่ประตูเท่านั้นที่ขุดจริง ประตูละ 1 ตัว)
+	local function workSlots(): number
+		local plot = plotId()
+		local ok, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
+		local count = 0
+		if ok and plot ~= nil then
+			for _, door in doors do
+				if tostring(door:GetAttribute("Mine")) == tostring(plot) and door:GetAttribute("Locked") ~= true then
+					count += 1
+				end
+			end
+		end
+		return count
+	end
+
+	-- เกณฑ์ของทีม = แรงขุดของตัวที่อ่อนสุดในทีมที่ดีที่สุด (N ตัวแรก, N = จำนวนประตู)
+	-- คืน 0 ถ้ายังมีประตูว่าง (ตัวไหนก็ช่วย) · nil ถ้ายังไม่มีข้อมูลกระเป๋า (ใช้ rarity ขั้นต่ำแทน)
+	local function teamThreshold(): (number?, number)
+		local list = bag.list
+		if type(list) ~= "table" then
+			return nil, 0
+		end
+		local slots = workSlots()
+		local working = 0
+		local powers = {}
+		for _, item in list do
+			if type(item) == "table" and item.id ~= nil then
+				if item.door ~= nil then
+					working += 1
+				end
+				local value = ownedPower(item)
+				if value then
+					table.insert(powers, value)
+				end
+			end
+		end
+		slots = math.max(slots, working)
+		if slots == 0 then
+			return nil, 0
+		end
+		table.sort(powers, function(a, b)
+			return a > b
+		end)
+		return (if #powers >= slots then powers[slots] else 0), slots
+	end
+
+	-- miner ที่แท่นโชว์อยู่: ชื่อ, rarity, ราคา (สูตรเดียวกับป้ายของเกม), แรงขุด
 	local function pedestalResult(pedestal: Instance): MinerInfo?
 		local key = pedestal:GetAttribute("Result") or ""
 		if key == "" then
@@ -3002,6 +3086,9 @@ function setup.roll()
 			mut = pedestal:GetAttribute("ResultMut"),
 			revealAt = num(pedestal:GetAttribute("RevealAt")),
 			rollId = pedestal:GetAttribute("RollId"),
+			power = if def and def.tier
+				then powerOf(def.tier, 1, pedestal:GetAttribute("ResultSize"), pedestal:GetAttribute("ResultMut"), pedestal:GetAttribute("ResultQ"))
+				else nil,
 		}
 	end
 
@@ -3009,20 +3096,37 @@ function setup.roll()
 		return pAttr("Pass_AutoRoll") == true or pAttr("AutoRollAccess") == true
 	end
 
-	-- miner ที่ต้องการ: ยังไม่มีใน Index (Auto Index) หรือ rarity ถึงขั้นต่ำ (Auto Roll)
-	local function isWanted(info: MinerInfo, indexed: { [string]: boolean }, minTier: number): boolean
-		return (config.autoIndex and not indexed[info.key]) or (config.autoRoll and info.tier >= minTier)
+	-- ตัวนี้ช่วยทีมไหม: ซื้อแบบฉลาด = แรงกว่าตัวที่อ่อนสุดในทีม · ปิดอยู่ (หรือยังไม่มีข้อมูล) = rarity ถึงขั้นต่ำ
+	local function forTeam(info: MinerInfo, minTier: number, threshold: number?): boolean
+		if not config.autoRoll then
+			return false
+		end
+		if config.smartBuy and threshold ~= nil and info.power ~= nil then
+			return info.power > threshold * 1.001
+		end
+		return info.tier >= minTier
 	end
 
-	-- รายชื่อที่ส่งให้ Auto Roll ของเกม: ตัวที่ขาดใน Index + ตัวที่ rarity ถึงขั้นต่ำ
+	-- miner ที่ต้องการ: ยังไม่มีใน Index (Auto Index) หรือช่วยทีม (Auto Roll)
+	local function isWanted(info: MinerInfo, indexed: { [string]: boolean }, minTier: number, threshold: number?): boolean
+		return (config.autoIndex and not indexed[info.key]) or forTeam(info, minTier, threshold)
+	end
+
+	-- รายชื่อที่ส่งให้ Auto Roll ของเกม: ตัวที่ขาดใน Index + พันธุ์ที่ช่วยทีมได้
+	-- ซื้อแบบฉลาด: พันธุ์ที่ถ้าออกมาขนาด Big ก็แรงกว่าตัวที่อ่อนสุดในทีม (แท่นออกจริงค่อยเช็คแรงขุดจริงอีกที)
 	-- (ไม่ใส่ตัวที่โชว์อยู่บนแท่นแต่เราข้ามไป ไม่งั้นเกมเจอตัวเดิมแล้วหยุดสุ่มทันที)
-	local function wantedMinerNames(exclude: { [string]: boolean }?): ({ string }, number)
+	local function wantedMinerNames(exclude: { [string]: boolean }?, threshold: number?): ({ string }, number)
 		local names = {}
 		local missing = 0
 		local indexed = indexSets()
 		local minTier = rarityTier(config.rollMinRarity)
 		for rarityName, list in minerPool() do
-			local byRarity = config.autoRoll and rarityTier(rarityName) >= minTier
+			local byRarity = false
+			if config.autoRoll then
+				local def = MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[rarityName]
+				local bigPower = if config.smartBuy and threshold ~= nil and def and def.tier then powerOf(def.tier, 1, "Big", nil, 0) else nil
+				byRarity = if bigPower ~= nil then bigPower > (threshold :: number) else rarityTier(rarityName) >= minTier
+			end
 			for _, name in list do
 				local isMissing = config.autoIndex and not indexed[name]
 				if isMissing then
@@ -3261,9 +3365,10 @@ function setup.roll()
 		return ok, noticeSince(since)
 	end
 
-	-- กระเป๋าเต็ม: ลบ miner ที่แย่ที่สุด (เฉพาะ rarity ต่ำกว่าขั้นต่ำ ไม่ใช่ตัวโปรด / บน hotbar / ทำงานที่ประตู และเหลือชนิดละอย่างน้อย 1 ตัว)
+	-- กระเป๋าเต็ม: ลบ miner ที่แย่ที่สุด (ไม่ติดทีมที่ดีที่สุด หรือ rarity ต่ำกว่าขั้นต่ำตอนปิดซื้อแบบฉลาด
+	-- ไม่ใช่ตัวโปรด / บน hotbar / ทำงานที่ประตู และเหลือชนิดละอย่างน้อย 1 ตัว)
 	local lastDeleteAt = 0
-	local function freeBagSpace(need: number, minTier: number): number
+	local function freeBagSpace(need: number, minTier: number, threshold: number?): number
 		local list = bag.list
 		if os.clock() - lastDeleteAt < 8 or type(list) ~= "table" then
 			return 0
@@ -3280,16 +3385,18 @@ function setup.roll()
 			if type(item) == "table" and item.uid ~= nil and item.id ~= nil and not item.fav and item.slot == nil and item.door == nil then
 				local model = folder and folder:FindFirstChild(tostring(item.id))
 				local tier = rarityTier(model and model:GetAttribute("Rarity"))
-				if tier > 0 and tier < minTier then
-					table.insert(pool, { uid = item.uid, id = item.id, tier = tier, power = num(item.power, num(item.kg)) })
+				local power = ownedPower(item) or num(item.kg)
+				local spare = if config.smartBuy and threshold ~= nil then power < threshold else tier < minTier
+				if tier > 0 and spare then
+					table.insert(pool, { uid = item.uid, id = item.id, tier = tier, power = power })
 				end
 			end
 		end
 		table.sort(pool, function(a, b)
-			if a.tier ~= b.tier then
-				return a.tier < b.tier
+			if a.power ~= b.power then
+				return a.power < b.power
 			end
-			return a.power < b.power
+			return a.tier < b.tier
 		end)
 		local picked, names = {}, {}
 		for _, candidate in pool do
@@ -3346,6 +3453,7 @@ function setup.roll()
 		local income = math.max(num(pAttr("IncomePerMin")), ratePerMinute())
 		local indexed = indexSets()
 		local full = bagFull()
+		local threshold = teamThreshold()
 
 		local skipped: { [string]: boolean } = {} -- ตัวที่โชว์อยู่แต่ไม่ซื้อ (ไม่ส่งให้ Auto Roll ของเกมหา)
 		local needRoll: { Instance } = {} -- แท่นที่ต้องสุ่มใหม่: ว่าง / ตัวที่ไม่เอา / แพงเกินรอ
@@ -3360,15 +3468,15 @@ function setup.roll()
 				table.insert(needRoll, pedestal)
 			elseif now < info.revealAt then
 				rollingCount += 1
-			elseif not isWanted(info, indexed, minTier) then
+			elseif not isWanted(info, indexed, minTier, threshold) then
 				skipped[info.key] = true
 				table.insert(needRoll, pedestal)
 			elseif full then
 				skipped[info.key] = true
 			else
-				-- ตัวที่ยังไม่มีใน Index ใช้เพดานเงินของแท็บ Index (ถ้าเข้าเงื่อนไข rarity ด้วย ใช้เพดานที่สูงกว่า)
+				-- ตัวที่ยังไม่มีใน Index ใช้เพดานเงินของแท็บ Index (ถ้าช่วยทีมด้วย ใช้เพดานที่สูงกว่า)
 				local isNew = config.autoIndex and not indexed[info.key]
-				local byRarity = config.autoRoll and info.tier >= minTier
+				local byRarity = forTeam(info, minTier, threshold)
 				local pct = config.rollMaxSpendPct
 				if isNew then
 					pct = if byRarity then math.max(pct, config.indexMaxSpendPct) else config.indexMaxSpendPct
@@ -3419,7 +3527,7 @@ function setup.roll()
 				alert("🎒 กระเป๋า miner เต็ม", string.format("%d/%d ซื้อ miner เพิ่มไม่ได้", count, cap), Theme.bad)
 			end
 			if config.bagAutoDelete then
-				local freed = freeBagSpace(math.clamp(count - cap + 1, 1, 5), minTier)
+				local freed = freeBagSpace(math.clamp(count - cap + 1, 1, 5), minTier, threshold)
 				if freed > 0 then
 					rollRow.setStatus(string.format("กระเป๋าเต็ม (%d/%d): ลบ miner ที่แย่สุด %d ตัวแล้ว", count, cap, freed), Theme.accent)
 					return
@@ -3499,7 +3607,7 @@ function setup.roll()
 				return
 			end
 			autoRollStartedAt = os.clock()
-			local names, missing = wantedMinerNames(skipped)
+			local names, missing = wantedMinerNames(skipped, threshold)
 			if #names > 0 then
 				local ok, why = startGameAutoRoll(names, pedestals)
 				if ok then
@@ -3544,6 +3652,7 @@ function setup.roll()
 		local now = workspace:GetServerTimeNow()
 		local minTier = rarityTier(config.rollMinRarity)
 		local indexed = indexSets()
+		local threshold, slots = teamThreshold()
 		local lines = {}
 		for _, pedestal in pedestals do
 			local info = pedestalResult(pedestal)
@@ -3556,22 +3665,38 @@ function setup.roll()
 				local tag = ""
 				if not indexed[info.key] then
 					tag = string.format("  <font color=\"%s\" face=\"RobotoMono\" size=\"11\">NEW INDEX</font>", colorHex(Theme.accent))
-				elseif info.tier >= minTier then
+				elseif forTeam(info, minTier, threshold) then
 					tag = string.format("  <font color=\"%s\">✓</font>", colorHex(Theme.good))
 				end
+				-- แรงขุด + เทียบกับตัวที่อ่อนสุดในทีม (+ แรงกว่า / − อ่อนกว่า)
+				local powerText = ""
+				if info.power then
+					local delta = ""
+					if threshold and threshold > 0 then
+						local pct = (info.power / threshold - 1) * 100
+						delta = string.format(" <font color=\"%s\">%s%d%%</font>", colorHex(if pct > 0 then Theme.good else Theme.dim), if pct > 0 then "+" else "", math.floor(pct + 0.5))
+					end
+					powerText = string.format("  <font face=\"RobotoMono\" color=\"%s\">%.1f/นาที</font>%s", colorHex(Theme.sub), info.power, delta)
+				end
 				line = string.format(
-					"<font color=\"%s\"><b>%s</b></font>  %s  <font color=\"%s\">%s%s</font>%s",
+					"<font color=\"%s\"><b>%s</b></font>  %s  <font color=\"%s\">%s%s</font>%s%s",
 					colorHex(rarityColor(info.rarity)),
 					info.rarity,
 					escapeRich(info.name),
 					colorHex(Theme.sub),
 					fmtCash(info.price),
 					if info.mut and info.mut ~= "" then " · " .. escapeRich(tostring(info.mut)) else "",
+					powerText,
 					tag
 				)
 			end
 			table.insert(lines, kv(string.format("P%-2s", pedestal.Name:match("%d+") or "?"), line))
 		end
+		local teamText = if not config.smartBuy
+			then "ปิดซื้อแบบฉลาด: ซื้อตาม rarity ขั้นต่ำ"
+			elseif threshold == nil then "รอข้อมูลกระเป๋า (ระหว่างนี้ซื้อตาม rarity ขั้นต่ำ)"
+			elseif threshold <= 0 then string.format("%d ประตู · ยังมีประตูว่าง ตัวไหนก็ช่วย", slots)
+			else string.format("%d ประตู · ตัวที่อ่อนสุดในทีม %.1f ore/นาที (ต้องแรงกว่านี้ถึงซื้อ)", slots, threshold)
 		local bagValue = "กำลังโหลด..."
 		if bag.count and bag.cap then
 			bagValue = string.format("%d/%d", bag.count, bag.cap)
@@ -3580,6 +3705,7 @@ function setup.roll()
 			end
 		end
 		table.insert(lines, "")
+		table.insert(lines, kv("TEAM", teamText))
 		table.insert(lines, kv("ROLL", if hasAutoRollAccess() then "Auto Roll ของเกม" else "ดึงคันโยกเอง (ไม่มีสิทธิ์ Auto Roll)"))
 		table.insert(lines, kv("BAG ", bagValue .. string.format("   ·   ซื้อในรอบนี้ %d ตัว · สุ่ม %d ครั้ง", counters.miners, counters.rolls)))
 		pedestalCard.Text = table.concat(lines, "\n")
@@ -4497,7 +4623,7 @@ function setup.afk()
 					"autoStock", "claimAway", "quickTp", "returnHome",
 					"autoUpgrade", "up_OreValue", "up_MineSpeed", "up_RollLuck", "up_StockCap", "up_HaulSpeed", "up_HaulCarry",
 					"upMine", "upQuarry", "upPedestal", "upDoors", "upFarm", "store_BagSpace", "store_PetSpace", "store_EggSpace",
-					"autoRoll", "useGameAutoRoll", "pullLever", "equipBest", "autoIndex", "indexPets",
+					"autoRoll", "smartBuy", "useGameAutoRoll", "pullLever", "equipBest", "autoIndex", "indexPets",
 					"autoHatch", "buyEggs", "petEquipBest", "unlockFarm",
 					"daily", "quests", "spin", "groupReward", "openRx", "drinkPotions", "buyPotions", "storePotions",
 					"antiAfk", "autoRejoin", "watchdog", "afkScreenAuto", "toasts",
