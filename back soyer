@@ -1,13 +1,14 @@
 --[[
-	⛏ Back Soyer · All-in-One AFK  (v2.1)
+	⛏ Back Soyer · All-in-One AFK  (v2.2)
 
 	วิธีใช้
 	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
 	- หน้าต่างจะเปิดขึ้นมา ทุกระบบเปิด/ปิดได้ทีละอัน ค่าที่ตั้งจะถูกจำไว้ (ไฟล์ BackSoyer_config.json)
-	- ซ่อน/แสดงหน้าต่าง: ปุ่ม RightControl (เปลี่ยนได้ในแท็บ Misc) หรือปุ่ม "⛏ Back Soyer" ที่ขอบจอซ้าย
+	- ซ่อน/แสดงหน้าต่าง: ปุ่ม RightControl (เปลี่ยนได้ในแท็บ AFK) หรือปุ่ม "⛏ Back Soyer" ที่ขอบจอซ้าย
 	- ครั้งแรก: เดินไปเหยียบแท่นขาย (Sell Ores) เอง 1 ครั้ง สคริปต์จะจำตำแหน่งไว้ถาวร
 
 	AFK ข้ามคืน
+	- แท็บ AFK: กด "⚡ เปิดโหมดสบายจัด" เปิดทุกระบบทีเดียว · ใส่ Discord Webhook ไว้ดูความคืบหน้าจากมือถือ
 	- เปิด Anti-AFK (กันโดนเตะเพราะไม่ขยับ) และ Auto Rejoin (หลุดแล้วเข้าเกมใหม่เอง)
 	- เซฟไฟล์นี้ชื่อ BackSoyer.lua ไว้ในโฟลเดอร์ workspace ของ Volt (หรือโฟลเดอร์ autoexec)
 	  พอเข้าเกมใหม่ สคริปต์จะรันต่อเองพร้อมค่าที่ตั้งไว้
@@ -16,7 +17,7 @@
 	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
 ]]
 
-local VERSION = "2.1"
+local VERSION = "2.2"
 local SCRIPT_FILE = "BackSoyer.lua"
 local CONFIG_FILE = "BackSoyer_config.json"
 -- ชื่อเดิมตอนยังเป็น Mine Hub (อ่านค่าเก่าต่อได้ + เข้าเกมใหม่แล้วรันไฟล์เก่าได้ถ้ายังไม่ได้เซฟชื่อใหม่)
@@ -119,13 +120,22 @@ local DEFAULTS = {
 	potionMaxSpendPct = 40,
 	storePotions = true,
 	spinTickets = false,
-	-- Misc
+	-- AFK
 	antiAfk = true,
 	autoRejoin = true,
+	watchdog = true,
+	afkScreenAuto = true,
+	afkScreenIdle = 3,
+	afkScreen3dOff = true,
 	lowGfx = false,
 	toasts = true,
 	uiKey = "RightControl",
 	uiOpen = true,
+	-- Discord
+	webhookUrl = "",
+	webhookAlerts = true,
+	webhookEvery = 30,
+	alertMinRarity = "Legendary",
 }
 
 local canFile = typeof(writefile) == "function" and typeof(readfile) == "function" and typeof(isfile) == "function"
@@ -501,6 +511,53 @@ local function minerDisplayName(key: string): string
 	return (model and model:GetAttribute("DisplayName")) or key
 end
 
+-- ความคืบหน้า Index: miner มี/ทั้งหมด, สัตว์ มี/ทั้งหมด, จำนวนชุดที่ครบ (ชุดละ +3%)
+local function indexProgress(): (number, number, number, number, number)
+	local indexed, indexedPets = indexSets()
+	local pool = minerPool()
+	local minersHave, minersTotal, petsHave, petsTotal, sets = 0, 0, 0, 0, 0
+	for _, rarityName in RARITY_NAMES do
+		local names = pool[rarityName]
+		if names and #names > 0 then
+			local have = 0
+			for _, name in names do
+				if indexed[name] then
+					have += 1
+				end
+			end
+			minersHave += have
+			minersTotal += #names
+			if have == #names then
+				sets += 1
+			end
+		end
+	end
+	for _, block in (PetCatalog and PetCatalog.BLOCKS) or {} do
+		local pets = block.pets or {}
+		local have = 0
+		for _, pet in pets do
+			if indexedPets[pet.id] then
+				have += 1
+			end
+		end
+		petsHave += have
+		petsTotal += #pets
+		if #pets > 0 and have == #pets then
+			sets += 1
+		end
+	end
+	return minersHave, minersTotal, petsHave, petsTotal, sets
+end
+
+-- เวลาแบบสั้น: 45 วินาที / 2 นาที / 2:30 นาที
+local function fmtDuration(seconds: number): string
+	if seconds < 60 then
+		return seconds .. " วินาที"
+	end
+	local minutes, rest = seconds // 60, seconds % 60
+	return if rest == 0 then minutes .. " นาที" else string.format("%d:%02d นาที", minutes, rest)
+end
+
 ---------------------------------------------------------------------
 -- 5) UI: ชิ้นส่วนพื้นฐาน
 ---------------------------------------------------------------------
@@ -859,6 +916,25 @@ local function nextOrder(): number
 	return rowOrder
 end
 
+-- ทุกแถวลงทะเบียนตัววาดใหม่ไว้: กดโหมดสบายจัด / คืนค่าเริ่มต้น แล้วปุ่มบนหน้าจอเปลี่ยนตามทันที
+local binders: { () -> () } = {}
+local function refreshAllRows()
+	for _, bind in binders do
+		pcall(bind)
+	end
+end
+
+-- ปุ่ม +/- ที่ก้าวใหญ่ขึ้นตามค่า (เช่น 1 วิ → 5 วิ → 15 วิ → 1 นาที)
+type StepLadder = { { upTo: number, step: number } }
+local function ladderStep(ladder: StepLadder, value: number, direction: number): number
+	for _, rung in ladder do
+		if (direction > 0 and value < rung.upTo) or (direction < 0 and value <= rung.upTo) then
+			return rung.step
+		end
+	end
+	return ladder[#ladder].step
+end
+
 local function section(page: Instance, title: string, desc: string?)
 	local frame = new("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
@@ -942,6 +1018,11 @@ local function toggleRow(page: Instance, key: string, title: string, desc: strin
 			onChange(value)
 		end
 	end)
+	table.insert(binders, function()
+		if switch.value ~= (config[key] == true) then
+			switch.set(config[key] == true)
+		end
+	end)
 	local row = {}
 	function row.setStatus(message: string?, color: Color3?)
 		status.Text = message or ""
@@ -989,9 +1070,19 @@ local function choiceRow(page: Instance, key: string, title: string, desc: strin
 		end)
 	end
 	paint()
+	table.insert(binders, paint)
 end
 
-local function stepperRow(page: Instance, key: string, title: string, desc: string?, minValue: number, maxValue: number, step: number, format: (number) -> string)
+local function stepperRow(
+	page: Instance,
+	key: string,
+	title: string,
+	desc: string?,
+	minValue: number,
+	maxValue: number,
+	step: number | StepLadder,
+	format: (number) -> string
+)
 	local holder = card(page)
 	textColumn(holder, UDim.new(1, -138), title, desc)
 	local box = new("Frame", {
@@ -1007,19 +1098,22 @@ local function stepperRow(page: Instance, key: string, title: string, desc: stri
 	local function paint()
 		valueLabel.Text = format(config[key])
 	end
-	local function change(delta: number)
-		local value = math.clamp(config[key] + delta, minValue, maxValue)
-		config[key] = math.floor(value / step + 0.5) * step
+	local function change(direction: number)
+		local current = config[key]
+		local stepSize: number = if type(step) == "table" then ladderStep(step, current, direction) else step :: number
+		local value = math.floor((current + direction * stepSize) / stepSize + 0.5) * stepSize
+		config[key] = math.clamp(value, minValue, maxValue)
 		saveConfig()
 		paint()
 	end
 	connect(minus.Activated, function()
-		change(-step)
+		change(-1)
 	end)
 	connect(plus.Activated, function()
-		change(step)
+		change(1)
 	end)
 	paint()
+	table.insert(binders, paint)
 end
 
 local function cycleRow(page: Instance, key: string, title: string, desc: string?, values: { string }, colorOf: ((string) -> Color3)?)
@@ -1053,9 +1147,53 @@ local function cycleRow(page: Instance, key: string, title: string, desc: string
 		shift(1)
 	end)
 	paint()
+	table.insert(binders, paint)
 end
 
-local function buttonRow(page: Instance, defs: { { label: string, color: Color3?, callback: () -> () } })
+-- ช่องพิมพ์ข้อความ: secret = ตอนไม่ได้แก้จะโชว์แค่ส่วนต้น (กันเผลอส่งรูปที่เห็นทั้งลิงก์)
+local function inputRow(page: Instance, key: string, title: string, placeholder: string, secret: boolean?): Row
+	local holder = card(page)
+	local column, status = textColumn(holder, UDim.new(1, 0), title, nil)
+	local box = new("TextBox", {
+		Text = "",
+		PlaceholderText = placeholder,
+		ClearTextOnFocus = false,
+		Font = FONT,
+		TextSize = 12,
+		TextColor3 = Theme.text,
+		PlaceholderColor3 = Theme.sub,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		BackgroundColor3 = Theme.panel2,
+		Size = UDim2.new(1, 0, 0, 30),
+		LayoutOrder = 2,
+		Parent = column,
+	}, { corner(8), padding(0, 10, 0, 10) })
+	local function paint()
+		local value = tostring(config[key] or "")
+		box.Text = if secret and value ~= "" and not box:IsFocused() then value:sub(1, 40) .. "…  (ซ่อนไว้)" else value
+	end
+	connect(box.Focused, function()
+		box.Text = tostring(config[key] or "")
+	end)
+	connect(box.FocusLost, function()
+		config[key] = (box.Text:gsub("^%s+", ""):gsub("%s+$", ""))
+		saveConfig()
+		paint()
+	end)
+	paint()
+	table.insert(binders, paint)
+	local row = {}
+	function row.setStatus(message: string?, color: Color3?)
+		status.Text = message or ""
+		status.TextColor3 = color or Theme.accent
+		status.Visible = message ~= nil and message ~= ""
+	end
+	function row.set(_value: boolean) end
+	return row :: any
+end
+
+local function buttonRow(page: Instance, defs: { { label: string, color: Color3?, textColor: Color3?, callback: () -> () } })
 	local bar = new("Frame", {
 		Size = UDim2.new(1, 0, 0, 32),
 		BackgroundTransparency = 1,
@@ -1068,6 +1206,7 @@ local function buttonRow(page: Instance, defs: { { label: string, color: Color3?
 			Text = def.label,
 			Size = UDim2.new(1 / count, -6 * (count - 1) / count, 1, 0),
 			BackgroundColor3 = def.color or Theme.panel2,
+			TextColor3 = def.textColor or Theme.text,
 			LayoutOrder = index,
 			Parent = bar,
 		})
@@ -1173,6 +1312,22 @@ end
 
 local function setActivity(message: string?)
 	activityLabel.Text = message or (if paused then "⏸ หยุดชั่วคราวอยู่" else "รอรอบถัดไป...")
+end
+
+-- เหตุการณ์สำคัญ (ได้ miner หายาก / เข้า Index ใหม่ / อัพเกรดใหญ่ / หลุดเกม): โชว์บนจอ AFK + ส่งเข้า Discord ถ้าตั้งไว้
+type AlertItem = { title: string, text: string, color: Color3, at: number }
+local recentEvents: { AlertItem } = {}
+local alertQueue: { AlertItem } = {}
+local function alert(title: string, textValue: string, color: Color3?)
+	local item = { title = title, text = textValue, color = color or Theme.accent, at = os.time() }
+	table.insert(recentEvents, 1, item)
+	while #recentEvents > 6 do
+		table.remove(recentEvents)
+	end
+	table.insert(alertQueue, item)
+	while #alertQueue > 20 do
+		table.remove(alertQueue, 1)
+	end
 end
 
 ---------------------------------------------------------------------
@@ -1465,7 +1620,7 @@ addTab("Roll", "🎲", "Roll", 3)
 addTab("Index", "📖", "Index", 4)
 addTab("Pets", "🐾", "Pets", 5)
 addTab("Rewards", "🎁", "Rewards", 6)
-addTab("Misc", "⚙", "Misc", 7)
+addTab("Misc", "🌙", "AFK", 7)
 logPage = addTab("Log", "📜", "Log", 8)
 
 -- ข้อมูลบนการ์ดของแต่ละแท็บ (อัปเดตเฉพาะแท็บที่เปิดอยู่)
@@ -1620,9 +1775,16 @@ do
 		),
 		{ { value = "safe", label = string.format("Safe x%.2f", SAFE_MULT) }, { value = "gamble", label = string.format("Gamble ~x%.2f", GAMBLE_EV) } }
 	)
-	stepperRow(farmPage, "sellEvery", "ขายทุก ๆ", "รอสะสมกล่องที่หลอมแล้วก่อนไปขาย (วาปน้อยลง)", 1, 120, 1, function(value)
-		return value .. " วินาที"
-	end)
+	stepperRow(
+		farmPage,
+		"sellEvery",
+		"ขายทุก ๆ",
+		"รอสะสมกล่องที่หลอมแล้วก่อนไปขาย (วาปน้อยลง เงินเข้าเป็นก้อน) · ได้ถึง 30 นาที ปุ่ม +/- ก้าวใหญ่ขึ้นเองตามค่า",
+		1,
+		1800,
+		{ { upTo = 10, step = 1 }, { upTo = 60, step = 5 }, { upTo = 300, step = 15 }, { upTo = math.huge, step = 60 } },
+		fmtDuration
+	)
 	local awayRow = toggleRow(farmPage, "claimAway", "รับเงินตอนออฟไลน์", "กดรับ Away Cash ให้เองเมื่อมี")
 
 	section(farmPage, "การวาป")
@@ -2327,6 +2489,7 @@ do
 			end
 			if entry.big then
 				toast("⬆ " .. entry.last, Theme.info)
+				alert("⬆ อัพเกรดใหญ่", entry.last .. " (" .. fmtCash(entry.cost) .. ")", Theme.info)
 			end
 		end
 		if bought > 0 then
@@ -2554,6 +2717,13 @@ do
 			local newText = if isNew then "  📖 ใหม่ใน Index" else ""
 			log("buy", string.format("ซื้อ miner %s (%s%s) %s%s", info.name, info.rarity, mutText, fmtCash(info.price), newText))
 			toast(string.format("🎲 ได้ %s  [%s%s]%s", info.name, info.rarity, mutText, newText), rarityColor(info.rarity))
+			if isNew or info.tier >= rarityTier(config.alertMinRarity) then
+				alert(
+					if isNew then "📖 ได้ miner ใหม่เข้า Index" else "🎲 ได้ miner หายาก",
+					string.format("%s  [%s%s]  ราคา %s", info.name, info.rarity, mutText, fmtCash(info.price)),
+					rarityColor(info.rarity)
+				)
+			end
 			if config.equipBest then
 				task.delay(1, function()
 					fire("BagAction", "equipBest")
@@ -2759,6 +2929,7 @@ do
 	local autoRollOffUntil = 0
 	local lastAutoRollLog = 0
 	local lastBagSync = 0
+	local lastBagAlert = -math.huge
 	local waitingKey: string? = nil
 	local waitingSince = 0
 
@@ -2855,6 +3026,10 @@ do
 		-- กระเป๋าเต็ม: ซื้อไม่ได้ สุ่มต่อก็เปล่าประโยชน์
 		if full then
 			local count, cap = bag.count or 0, bag.cap or 0
+			if os.clock() - lastBagAlert > 1800 then
+				lastBagAlert = os.clock()
+				alert("🎒 กระเป๋า miner เต็ม", string.format("%d/%d ซื้อ miner เพิ่มไม่ได้", count, cap), Theme.bad)
+			end
 			if config.bagAutoDelete then
 				local freed = freeBagSpace(math.clamp(count - cap + 1, 1, 5), minTier)
 				if freed > 0 then
@@ -3228,6 +3403,9 @@ do
 					local newText = if isNew then "  📖 ใหม่ใน Index" else ""
 					log("good", "ฟักไข่ได้ " .. petName(result.pet) .. newText)
 					toast("🐣 ฟักได้ " .. petName(result.pet) .. newText, Theme.good)
+					if isNew then
+						alert("🐣 ได้สัตว์ใหม่เข้า Index", petName(result.pet), Theme.good)
+					end
 					if config.petEquipBest then
 						task.delay(1, function()
 							fire("BagAction", "petEquipBest")
@@ -3778,21 +3956,157 @@ startLoop("Equip Best", nil, 60, nil, function()
 end)
 
 ---------------------------------------------------------------------
--- 17) MISC: Anti-AFK / Rejoin / ประหยัดเครื่อง / วาป / Spectate
+-- 17) AFK: โหมดสบายจัด / กันหลุด / ระบบดูแลตัวเอง / จอ AFK / Discord / วาป / Spectate
 ---------------------------------------------------------------------
 do
 	local miscPage = pages.Misc
 
-	local function applyLowGfx(on: boolean)
+	-- จอ AFK กับโหมดประหยัดเครื่องใช้สวิตช์ภาพ 3D ร่วมกัน: ปิด 3D ถ้าอย่างใดอย่างหนึ่งต้องการ
+	local afkShown = false
+	local function apply3d()
+		local off = config.lowGfx or (afkShown and config.afkScreen3dOff)
 		pcall(function()
-			RunService:Set3dRenderingEnabled(not on)
+			RunService:Set3dRenderingEnabled(not off)
 		end)
+	end
+	local function applyLowGfx(on: boolean)
+		apply3d()
 		if typeof(setfpscap) == "function" then
 			pcall(setfpscap, if on then 15 else 240)
 		end
 	end
+	local setAfkScreen: (boolean, boolean?) -> ()
 
-	section(miscPage, "AFK")
+	-- ส่งเข้า Discord: executor ต้องมีฟังก์ชันส่งข้อมูลออกเน็ต (request) และส่งได้เฉพาะลิงก์ Webhook ของ Discord
+	local httpRequest = (typeof(request) == "function" and request)
+		or (typeof(http_request) == "function" and http_request)
+		or (typeof(syn) == "table" and typeof(syn.request) == "function" and syn.request)
+		or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
+		or nil
+
+	local function validWebhook(url: string): boolean
+		return url:match("^https://[%w%.%-]*discord[%w]*%.com/api/webhooks/%d+/[%w%-_]+") ~= nil
+	end
+
+	local function postWebhook(payload: { [string]: any }): (boolean, string?)
+		if not validWebhook(config.webhookUrl) then
+			return false, "ยังไม่ได้ใส่ Webhook URL ของ Discord (หรือรูปแบบลิงก์ไม่ถูก)"
+		end
+		if not httpRequest then
+			return false, "executor นี้ส่งข้อมูลออกเน็ตไม่ได้ (ไม่มีฟังก์ชัน request)"
+		end
+		local ok, response = pcall(httpRequest, {
+			Url = config.webhookUrl,
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = HttpService:JSONEncode(payload),
+		})
+		if not ok then
+			return false, tostring(response)
+		end
+		local code = if type(response) == "table" then tonumber(response.StatusCode) else nil
+		if code and code >= 300 then
+			return false, "Discord ตอบกลับรหัส " .. code
+		end
+		return true, nil
+	end
+
+	local function embed(title: string, description: string, color: Color3, fields: { any }?): { [string]: any }
+		return {
+			username = "Back Soyer",
+			embeds = {
+				{
+					title = title,
+					description = description,
+					color = math.floor(color.R * 255) * 65536 + math.floor(color.G * 255) * 256 + math.floor(color.B * 255),
+					fields = fields,
+					footer = { text = "Back Soyer v" .. VERSION .. " · " .. localPlayer.Name },
+					timestamp = DateTime.now():ToIsoDate(),
+				},
+			},
+		}
+	end
+
+	local function bagText(): string
+		if bag.count and bag.cap then
+			return string.format("%d/%d%s", bag.count, bag.cap, if bagFull() then " (เต็ม!)" else "")
+		end
+		return "-"
+	end
+
+	local function summaryPayload(title: string): { [string]: any }
+		local minersHave, minersTotal, petsHave, petsTotal, sets = indexProgress()
+		local rate = ratePerMinute()
+		return embed(title, "Plot " .. tostring(plotId() or "?") .. (if paused then " · ⏸ หยุดอยู่" else ""), Theme.accent, {
+			{ name = "💰 เงินตอนนี้", value = fmtCash(cash()), inline = true },
+			{ name = "📈 ได้ในรอบนี้", value = "+" .. fmtCash(session.earned), inline = true },
+			{ name = "⏱ รายได้", value = fmtCash(rate) .. "/นาที\n" .. fmtCash(rate * 60) .. "/ชม.", inline = true },
+			{
+				name = "📖 Index",
+				value = string.format("Miners %d/%d · Pets %d/%d · โบนัส +%d%%", minersHave, minersTotal, petsHave, petsTotal, sets * 3),
+				inline = false,
+			},
+			{
+				name = "📊 รอบนี้",
+				value = string.format(
+					"ขาย %d ครั้ง · อัพเกรด %d · ซื้อ miner %d (ใหม่ใน Index %d) · สุ่ม %d · ฟักไข่ %d",
+					counters.sell,
+					counters.upgrades,
+					counters.miners,
+					counters.indexNew,
+					counters.rolls,
+					counters.hatched
+				),
+				inline = false,
+			},
+			{ name = "🕒 เปิดมาแล้ว", value = fmtTime(os.clock() - session.start), inline = true },
+			{ name = "🎒 กระเป๋า miner", value = bagText(), inline = true },
+		})
+	end
+
+	section(
+		miscPage,
+		"⚡ โหมดสบายจัด",
+		"กดปุ่มเดียว เปิดทุกระบบให้ทำงานเอง: ฟาร์ม / อัพเกรด / สุ่ม / Index / สัตว์ / รางวัล / กันหลุด / ดูแลตัวเอง / จอ AFK · ค่าที่เลือกเองไม่เปลี่ยน (โหมดขาย, rarity, เพดานเงิน, การลบ miner)"
+	)
+	buttonRow(miscPage, {
+		{
+			label = "⚡ เปิดโหมดสบายจัด",
+			color = Theme.accent,
+			textColor = Theme.bg,
+			callback = function()
+				for _, key in {
+					"autoStock", "claimAway", "quickTp", "returnHome",
+					"autoUpgrade", "up_OreValue", "up_MineSpeed", "up_RollLuck", "up_StockCap", "up_HaulSpeed", "up_HaulCarry",
+					"upMine", "upQuarry", "upPedestal", "upDoors", "upFarm", "store_BagSpace", "store_PetSpace", "store_EggSpace",
+					"autoRoll", "useGameAutoRoll", "pullLever", "equipBest", "autoIndex", "indexPets",
+					"autoHatch", "buyEggs", "petEquipBest", "unlockFarm",
+					"daily", "quests", "spin", "groupReward", "openRx", "drinkPotions", "buyPotions", "storePotions",
+					"antiAfk", "autoRejoin", "watchdog", "afkScreenAuto", "toasts",
+				} do
+					config[key] = true
+				end
+				config.upgradeMode = "progress"
+				if paused then
+					paused = false
+					chrome.pause.Text = "⏸ หยุดทั้งหมด"
+					chrome.pause.BackgroundColor3 = Theme.panel2
+				end
+				saveConfig()
+				refreshAllRows()
+				log("good", "เปิดโหมดสบายจัดแล้ว: ทุกระบบทำงานเอง ปล่อย AFK ได้เลย")
+				toast("⚡ โหมดสบายจัด: ทุกระบบทำงานเองแล้ว", Theme.accent)
+			end,
+		},
+		{
+			label = "🖥 เปิดจอ AFK",
+			callback = function()
+				setAfkScreen(true, false)
+			end,
+		},
+	})
+
+	section(miscPage, "กันหลุด + ดูแลตัวเอง")
 	local afkRow = toggleRow(miscPage, "antiAfk", "Anti-AFK", "กันโดนเตะออกเพราะไม่ได้ขยับ 20 นาที")
 	local rejoinRow = toggleRow(
 		miscPage,
@@ -3800,9 +4114,83 @@ do
 		"Auto Rejoin",
 		"หลุด/โดนเตะ แล้วเข้าเกมใหม่เอง · ให้สคริปต์รันต่อเอง: เซฟไฟล์นี้ชื่อ BackSoyer.lua ใน workspace ของ Volt หรือใส่ใน autoexec"
 	)
-	toggleRow(miscPage, "lowGfx", "โหมดประหยัดเครื่อง", "ปิดภาพ 3D + จำกัด FPS ตอน AFK (หน้าจอจะว่าง แต่สคริปต์ทำงานปกติ)", applyLowGfx)
+	local watchdogRow = toggleRow(
+		miscPage,
+		"watchdog",
+		"ระบบดูแลตัวเอง",
+		"ถ้าเงินไม่เข้านานผิดปกติ (ฟาร์มค้าง / เซิร์ฟแลค) จะวาปกลับบ้านก่อน ถ้ายังไม่หายจะเข้าเซิร์ฟใหม่ให้เอง · กล้องค้างก็แก้ให้"
+	)
+
+	section(miscPage, "🖥 จอ AFK", "ไม่ได้แตะเมาส์/คีย์บอร์ดสักพัก จะขึ้นจอสรุปตัวใหญ่ (เงิน รายได้ Index เหตุการณ์ล่าสุด) กดปุ่มอะไรก็ได้เพื่อกลับ")
+	toggleRow(miscPage, "afkScreenAuto", "เปิดจอ AFK เองเมื่อไม่ได้ใช้งาน")
+	stepperRow(miscPage, "afkScreenIdle", "เปิดหลังไม่ได้ใช้งาน", nil, 1, 30, 1, function(value)
+		return value .. " นาที"
+	end)
+	toggleRow(miscPage, "afkScreen3dOff", "ปิดภาพ 3D ตอนจอ AFK ขึ้น", "เครื่องเย็นลง กินไฟน้อยลง สคริปต์ยังทำงานปกติ", function()
+		apply3d()
+	end)
+	toggleRow(miscPage, "lowGfx", "โหมดประหยัดเครื่อง (ตลอดเวลา)", "ปิดภาพ 3D + จำกัด FPS 15 ตลอด (หน้าจอจะว่าง แต่สคริปต์ทำงานปกติ)", applyLowGfx)
 	toggleRow(miscPage, "toasts", "แจ้งเตือนมุมจอ", "เด้งบอกตอนได้ miner / ฟักไข่ / อัพเกรดใหญ่ ฯลฯ")
 	cycleRow(miscPage, "uiKey", "ปุ่มซ่อน/แสดงหน้าต่าง", nil, { "RightControl", "RightShift", "Insert", "Home", "F6" })
+
+	section(
+		miscPage,
+		"🔔 แจ้งเตือนเข้า Discord",
+		"ดูความคืบหน้าจากมือถือได้ · ในห้อง Discord ของคุณ: ตั้งค่าห้อง → Integrations → Webhooks → New Webhook → Copy Webhook URL แล้ววางด้านล่าง"
+	)
+	local webhookRow = inputRow(miscPage, "webhookUrl", "Webhook URL", "วางลิงก์ https://discord.com/api/webhooks/... ตรงนี้", true)
+	toggleRow(miscPage, "webhookAlerts", "แจ้งทันทีเมื่อมีเรื่องสำคัญ", "ได้ miner/สัตว์ใหม่เข้า Index · ได้ miner หายาก · อัพเกรดใหญ่ · กระเป๋าเต็ม · หลุดเกม")
+	cycleRow(miscPage, "alertMinRarity", "แจ้ง miner หายากตั้งแต่", nil, RARITY_NAMES, rarityColor)
+	stepperRow(miscPage, "webhookEvery", "ส่งสรุปทุก ๆ", "เงิน / รายได้ต่อชั่วโมง / Index / สถิติรอบนี้", 0, 240, 15, function(value)
+		return if value == 0 then "ไม่ส่ง" else value .. " นาที"
+	end)
+	buttonRow(miscPage, {
+		{
+			label = "📨 ส่งข้อความทดสอบ",
+			callback = function()
+				local ok, err = postWebhook(
+					embed(
+						"✅ เชื่อมต่อ Back Soyer แล้ว",
+						"จะแจ้งเรื่องสำคัญทันที"
+							.. (if config.webhookEvery > 0 then " และส่งสรุปทุก " .. config.webhookEvery .. " นาที" else ""),
+						Theme.good
+					)
+				)
+				webhookRow.setStatus(if ok then "ส่งทดสอบสำเร็จ · " .. os.date("%H:%M:%S") else "ส่งไม่สำเร็จ: " .. tostring(err), if ok then Theme.good else Theme.bad)
+			end,
+		},
+		{
+			label = "📊 ส่งสรุปตอนนี้",
+			callback = function()
+				local ok, err = postWebhook(summaryPayload("📊 สรุปความคืบหน้า"))
+				webhookRow.setStatus(if ok then "ส่งสรุปแล้ว · " .. os.date("%H:%M:%S") else "ส่งไม่สำเร็จ: " .. tostring(err), if ok then Theme.good else Theme.bad)
+			end,
+		},
+	})
+
+	-- ส่งเรื่องสำคัญทีละอัน (Discord จำกัดความถี่) + สรุปเป็นรอบ
+	task.spawn(function()
+		local lastReportAt = os.clock()
+		while running do
+			task.wait(2)
+			if not (httpRequest and validWebhook(config.webhookUrl)) then
+				table.clear(alertQueue)
+				lastReportAt = os.clock()
+				continue
+			end
+			local item = table.remove(alertQueue, 1)
+			if item and config.webhookAlerts then
+				local ok, err = postWebhook(embed(item.title, item.text, item.color))
+				if not ok then
+					webhookRow.setStatus("ส่งแจ้งเตือนไม่สำเร็จ: " .. tostring(err), Theme.bad)
+				end
+			elseif config.webhookEvery > 0 and os.clock() - lastReportAt >= config.webhookEvery * 60 then
+				lastReportAt = os.clock()
+				local ok, err = postWebhook(summaryPayload("📊 สรุปความคืบหน้า"))
+				webhookRow.setStatus(if ok then "ส่งสรุปล่าสุด " .. os.date("%H:%M:%S") else "ส่งสรุปไม่สำเร็จ: " .. tostring(err), if ok then Theme.sub else Theme.bad)
+			end
+		end
+	end)
 
 	section(miscPage, "วาป")
 	buttonRow(miscPage, {
@@ -3977,15 +4365,17 @@ do
 		end
 	end)
 
-	-- Anti-AFK: จำลองการกดเมาส์ตอนเกมจะเตะเพราะไม่ขยับ
+	-- Anti-AFK: จำลองการกดเมาส์ตอนเกมจะเตะเพราะไม่ขยับ (ไม่นับเป็นการใช้งานของจอ AFK)
 	local virtualUser = nil
 	pcall(function()
 		virtualUser = game:GetService("VirtualUser")
 	end)
+	local ignoreInputUntil = 0
 	connect(localPlayer.Idled, function()
 		if not config.antiAfk or not virtualUser then
 			return
 		end
+		ignoreInputUntil = os.clock() + 2
 		pcall(function()
 			virtualUser:CaptureController()
 			virtualUser:ClickButton2(Vector2.new())
@@ -4026,9 +4416,197 @@ do
 	connect(GuiService.ErrorMessageChanged, function(message)
 		if config.autoRejoin and type(message) == "string" and message ~= "" then
 			rejoinRow.setStatus("หลุด: " .. message, Theme.bad)
+			alert("🔌 หลุดจากเกม", message .. " · กำลังเข้าใหม่ให้เอง", Theme.bad)
 			task.delay(3, rejoin, message)
 		end
 	end)
+
+	-- ระบบดูแลตัวเอง: เงินไม่เข้านานผิดปกติ → วาปกลับบ้านก่อน ถ้ายังไม่เข้า → เข้าเซิร์ฟใหม่
+	-- (ระบบดูแล / จอ AFK อยู่ในฟังก์ชันของตัวเอง เพราะตัวแปรในบล็อกนี้ชนขีดจำกัด 200 ตัวของ Luau)
+	local function setupWatchdog()
+		local lastEarned, lastEarnAt, softFixed, hardFixed = session.earned, os.clock(), false, false
+		startLoop("Watchdog", "watchdog", 15, watchdogRow, function()
+			-- กล้องค้างแบบ Scriptable ทั้งที่ไม่ได้วาปอยู่ (เช่น error กลางทาง) → คืนกล้องให้
+			local camera = workspace.CurrentCamera
+			if camera and camera.CameraType == Enum.CameraType.Scriptable and not hopBusy then
+				camera.CameraType = Enum.CameraType.Custom
+				log("warn", "ระบบดูแล: กล้องค้าง คืนกล้องให้แล้ว")
+			end
+			if session.earned > lastEarned then
+				lastEarned, lastEarnAt, softFixed = session.earned, os.clock(), false
+			end
+			if not config.autoStock or paused or not alive() then
+				lastEarnAt = os.clock()
+				watchdogRow.setStatus("ไม่ได้เฝ้า (Auto Farm ปิด / หยุดอยู่ / รอตัวละครเกิด)", Theme.sub)
+				return
+			end
+			-- ขายห่าง ๆ เงินก็เข้าห่าง: เผื่อเวลาตามรอบขาย
+			local limit = math.max(20 * 60, config.sellEvery * 2 + 300)
+			local idle = os.clock() - lastEarnAt
+			if idle > limit and not hardFixed then
+				hardFixed = true
+				alert("🛠 เงินไม่เข้า " .. fmtTime(idle), "ระบบดูแลกำลังเข้าเซิร์ฟใหม่เพื่อแก้อาการค้าง", Theme.bad)
+				rejoinRow.setStatus("ระบบดูแล: เงินไม่เข้านานเกินไป กำลังเข้าเซิร์ฟใหม่", Theme.bad)
+				task.delay(3, rejoin, "เงินไม่เข้า " .. math.floor(idle / 60) .. " นาที")
+			elseif idle > limit / 2 and not softFixed then
+				softFixed = true
+				fire("WarpRequest", "home")
+				log("warn", "ระบบดูแล: เงินไม่เข้า " .. fmtTime(idle) .. " ลองวาปกลับบ้านก่อน")
+			end
+			watchdogRow.setStatus(
+				string.format("เงินเข้าล่าสุด %s ที่แล้ว · ถ้าเกิน %s จะเข้าเซิร์ฟใหม่ให้เอง", fmtTime(idle), fmtTime(limit)),
+				Theme.sub
+			)
+		end)
+	end
+	setupWatchdog()
+
+	-- จอ AFK: จอสรุปตัวใหญ่ ขึ้นเองตอนไม่ได้ใช้งาน
+	local function setupAfkScreen()
+		local afkGui = new("ScreenGui", {
+			Name = "BackSoyerAFK",
+			ResetOnSpawn = false,
+			IgnoreGuiInset = true,
+			DisplayOrder = 59,
+			Enabled = false,
+			ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+			Parent = gui.Parent,
+		})
+		table.insert(cleanupHooks, function()
+			afkGui:Destroy()
+		end)
+		local backdrop = new("TextButton", {
+			Text = "",
+			AutoButtonColor = false,
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = Color3.fromRGB(10, 11, 16),
+			Parent = afkGui,
+		})
+		local column = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.new(0.9, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			Parent = backdrop,
+		}, {
+			new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center }),
+			new("UISizeConstraint", { MaxSize = Vector2.new(640, math.huge) }),
+		})
+		local function afkText(order: number, size: number, color: Color3, bold: boolean?): TextLabel
+			return paragraph({
+				Text = "",
+				TextSize = size,
+				TextColor3 = color,
+				Font = if bold then FONT_BOLD else FONT,
+				RichText = true,
+				TextXAlignment = Enum.TextXAlignment.Center,
+				LayoutOrder = order,
+				Parent = column,
+			})
+		end
+		afkText(1, 14, Theme.sub, true).Text = "⛏  BACK SOYER  ·  AFK"
+		local afkCash = afkText(2, 60, Theme.accent, true)
+		local afkIncome = afkText(3, 17, Theme.text)
+		local afkIndex = afkText(4, 15, Theme.text)
+		local afkSystems = afkText(5, 14, Theme.text)
+		local afkActivity = afkText(6, 13, Theme.sub)
+		local afkEvents = afkText(7, 13, Theme.text)
+		afkText(8, 12, Theme.sub).Text = "กดปุ่มอะไรก็ได้ หรือคลิกที่จอ เพื่อกลับ"
+
+		local afkAuto = false
+		local afkShownAt = 0
+		local lastInputAt = os.clock()
+		setAfkScreen = function(on: boolean, auto: boolean?)
+			if afkShown == on then
+				return
+			end
+			afkShown = on
+			afkAuto = on and auto == true
+			afkShownAt = os.clock()
+			afkGui.Enabled = on
+			apply3d()
+		end
+
+		local function updateAfkScreen()
+			local minersHave, minersTotal, petsHave, petsTotal, sets = indexProgress()
+			local rate = ratePerMinute()
+			afkCash.Text = fmtCash(cash())
+			afkIncome.Text = string.format(
+				"+%s ในรอบนี้  ·  %s/ชม.  ·  เปิดมา %s%s",
+				fmtCash(session.earned),
+				fmtCash(rate * 60),
+				fmtTime(os.clock() - session.start),
+				if paused then "  ·  ⏸ หยุดอยู่" else ""
+			)
+			afkIndex.Text = string.format(
+				"📖 Index  Miners %d/%d  ·  Pets %d/%d  ·  โบนัส +%d%%   🎒 กระเป๋า %s",
+				minersHave,
+				minersTotal,
+				petsHave,
+				petsTotal,
+				sets * 3,
+				bagText()
+			)
+			local chips = {}
+			for _, entry in {
+				{ "ฟาร์ม", config.autoStock },
+				{ "อัพเกรด", config.autoUpgrade },
+				{ "สุ่ม", config.autoRoll or config.autoIndex },
+				{ "สัตว์", config.autoHatch },
+				{ "รางวัล", config.daily or config.quests },
+				{ "ดูแลตัวเอง", config.watchdog },
+				{ "Discord", httpRequest ~= nil and validWebhook(config.webhookUrl) },
+			} do
+				local on = entry[2] and not paused
+				table.insert(chips, string.format("<font color=\"%s\">● %s</font>", colorHex(if on then Theme.good else Theme.off), entry[1]))
+			end
+			afkSystems.Text = table.concat(chips, "    ")
+			afkActivity.Text = activityLabel.Text
+			local lines = {}
+			for _, item in recentEvents do
+				table.insert(lines, string.format("<font color=\"%s\">%s  %s</font>  %s", colorHex(item.color), os.date("%H:%M", item.at), item.title, item.text))
+			end
+			afkEvents.Text = if #lines > 0 then table.concat(lines, "\n") else "<font color=\"#949CAE\">ยังไม่มีเหตุการณ์สำคัญในรอบนี้</font>"
+		end
+
+		connect(backdrop.Activated, function()
+			setAfkScreen(false)
+		end)
+		connect(UserInputService.InputBegan, function()
+			if os.clock() < ignoreInputUntil then
+				return
+			end
+			lastInputAt = os.clock()
+			if afkShown and os.clock() - afkShownAt > 0.5 then
+				setAfkScreen(false)
+			end
+		end)
+		connect(UserInputService.InputChanged, function(input)
+			if os.clock() < ignoreInputUntil then
+				return
+			end
+			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+				lastInputAt = os.clock()
+				-- จอที่ขึ้นเองปิดเมื่อขยับเมาส์ / จอที่กดเปิดเองปิดเมื่อกดปุ่มหรือคลิกเท่านั้น
+				if afkShown and afkAuto and os.clock() - afkShownAt > 1.5 then
+					setAfkScreen(false)
+				end
+			end
+		end)
+		task.spawn(function()
+			while running do
+				if afkShown then
+					pcall(updateAfkScreen)
+				elseif config.afkScreenAuto and os.clock() - lastInputAt > config.afkScreenIdle * 60 then
+					setAfkScreen(true, true)
+					pcall(updateAfkScreen)
+				end
+				task.wait(0.5)
+			end
+		end)
+	end
+	setupAfkScreen()
 
 	section(miscPage, "สคริปต์")
 	local capabilityCard = liveCard(miscPage)
@@ -4043,11 +4621,12 @@ do
 	end
 	table.sort(loadedModules)
 	capabilityCard.Text = string.format(
-		"ฟังก์ชันของ executor: กดปุ่ม E %s · เขียนไฟล์ (จำค่า) %s · รันต่อหลังเข้าใหม่ %s · จำกัด FPS %s\nโมดูลเกมที่โหลดได้: %s",
+		"ฟังก์ชันของ executor: กดปุ่ม E %s · เขียนไฟล์ (จำค่า) %s · รันต่อหลังเข้าใหม่ %s · จำกัด FPS %s · ส่งเข้า Discord %s\nโมดูลเกมที่โหลดได้: %s",
 		yesNo(typeof(fireproximityprompt) == "function"),
 		yesNo(canFile),
 		yesNo(queueTeleport ~= nil),
 		yesNo(typeof(setfpscap) == "function"),
+		yesNo(httpRequest ~= nil),
 		if #loadedModules > 0 then table.concat(loadedModules, ", ") else "ไม่มี"
 	)
 
@@ -4062,11 +4641,15 @@ do
 		{
 			label = "↺ คืนค่าเริ่มต้น",
 			callback = function()
+				-- เก็บ Webhook กับตำแหน่งแท่นขายไว้ ไม่ต้องตั้งใหม่
+				local webhookUrl = config.webhookUrl
 				for key, value in DEFAULTS do
 					config[key] = value
 				end
+				config.webhookUrl = webhookUrl
 				saveConfig()
-				log("warn", "คืนค่าเริ่มต้นแล้ว รันสคริปต์ใหม่เพื่อให้ปุ่มแสดงค่าถูกต้อง")
+				refreshAllRows()
+				log("warn", "คืนค่าเริ่มต้นแล้ว (Webhook กับตำแหน่งแท่นขายยังอยู่)")
 			end,
 		},
 		{
@@ -4084,8 +4667,11 @@ do
 		if spectating then
 			setSpectate(false)
 		end
-		if config.lowGfx then
-			applyLowGfx(false)
+		pcall(function()
+			RunService:Set3dRenderingEnabled(true)
+		end)
+		if config.lowGfx and typeof(setfpscap) == "function" then
+			pcall(setfpscap, 240)
 		end
 	end)
 
@@ -4278,5 +4864,7 @@ do
 	end
 end
 toast("⛏ Back Soyer พร้อมทำงาน · " .. config.uiKey .. " = ซ่อน/แสดง", Theme.accent)
+-- แจ้งเข้า Discord ด้วย (รู้ว่าสคริปต์กลับมาทำงานแล้วหลังหลุด/เข้าเซิร์ฟใหม่)
+alert("🟢 Back Soyer เริ่มทำงาน", "v" .. VERSION .. " · Plot " .. tostring(plotId() or "?") .. " · เงิน " .. fmtCash(cash()), Theme.good)
 -- ขอข้อมูลกระเป๋าตั้งแต่เริ่ม (ไว้เช็คกระเป๋าเต็ม)
 task.delay(2, fire, "BagAction", "sync")
