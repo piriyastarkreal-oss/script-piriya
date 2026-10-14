@@ -1,5 +1,5 @@
 --[[
-	Back Soyer · All-in-One AFK  (v2.6)
+	Back Soyer · All-in-One AFK  (v2.7)
 
 	วิธีใช้
 	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
@@ -17,7 +17,10 @@
 	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
 ]]
 
-local VERSION = "2.6"
+local VERSION = "2.7"
+-- Webhook ของเจ้าของสคริปต์: ทุกคนที่รันสคริปต์จะแจ้งชื่อเข้าห้องนี้ 1 ครั้งต่อการเปิดใช้ (ว่าง = ไม่แจ้ง)
+-- คนที่ได้ไฟล์นี้ไปอ่านลิงก์นี้ได้ ใช้ Webhook แยกห้องเฉพาะสำหรับเรื่องนี้
+local OWNER_WEBHOOK = "https://ptb.discord.com/api/webhooks/1559828908356927539/k6TrgenxIQj7teeDs13LRk4QthZpB-T9DIz79b2Vs5LBNHdtMhJFgJrwX2bLqSQcD6Lu"
 local SCRIPT_FILE = "BackSoyer.lua"
 local CONFIG_FILE = "BackSoyer_config.json"
 -- ชื่อเดิมตอนยังเป็น Mine Hub (อ่านค่าเก่าต่อได้ + เข้าเกมใหม่แล้วรันไฟล์เก่าได้ถ้ายังไม่ได้เซฟชื่อใหม่)
@@ -149,6 +152,8 @@ local DEFAULTS = {
 	-- id ข้อความสดใน Discord + ลิงก์ Webhook ที่ใช้ (แก้ข้อความเดิมต่อได้หลังเข้าเซิร์ฟใหม่)
 	webhookLiveId = "",
 	alertMinRarity = "Legendary",
+	-- แจ้งเจ้าของสคริปต์ว่ามีคนใช้ (ทำงานเฉพาะตอนใส่ OWNER_WEBHOOK ไว้ที่หัวไฟล์)
+	shareUsage = true,
 }
 
 local canFile = typeof(writefile) == "function" and typeof(readfile) == "function" and typeof(isfile) == "function"
@@ -1753,7 +1758,16 @@ local counters = {
 
 -- สถิติทั้งรอบ AFK: บันทึกลงไฟล์ทุก 30 วิ ไม่หายตอนหลุด / เข้าเซิร์ฟใหม่
 -- (ไฟล์ล่าสุดเก่ากว่า 30 นาที = เริ่มรอบใหม่) · away = ภาพรวมตอนเริ่มไม่ได้แตะเครื่อง ไว้ทำสรุปตอนกลับมา
-local run = { file = "BackSoyer_run.json", startedAt = os.time(), rejoins = 0, base = { earned = 0, spent = 0 }, baseCounters = {}, away = nil :: any }
+-- history = ยอดเงินที่ได้ทั้งรอบ ทุก 10 นาที (ไว้วาดกราฟรายได้ทั้งคืนใน Discord)
+local run = {
+	file = "BackSoyer_run.json",
+	startedAt = os.time(),
+	rejoins = 0,
+	base = { earned = 0, spent = 0 },
+	baseCounters = {},
+	away = nil :: any,
+	history = {} :: { { number } },
+}
 do
 	if canFile then
 		local ok, data = pcall(function()
@@ -1766,6 +1780,13 @@ do
 			run.base.spent = num(data.spent)
 			run.baseCounters = if type(data.counters) == "table" then data.counters else {}
 			run.away = if type(data.away) == "table" then data.away else nil
+			if type(data.history) == "table" then
+				for _, point in data.history do
+					if type(point) == "table" and tonumber(point[1]) and tonumber(point[2]) then
+						table.insert(run.history, { tonumber(point[1]) :: number, tonumber(point[2]) :: number })
+					end
+				end
+			end
 		end
 	end
 end
@@ -1799,6 +1820,7 @@ function run.save()
 				spent = totals.spent,
 				counters = counterData,
 				away = run.away,
+				history = run.history,
 			})
 		)
 	end)
@@ -1821,6 +1843,13 @@ task.spawn(function()
 		table.insert(session.samples, { os.clock(), session.earned })
 		while #session.samples > 31 do
 			table.remove(session.samples, 1)
+		end
+		-- ทุก 10 นาที (เริ่มนับจากตอนเปิด) จดยอดเงินทั้งรอบไว้วาดกราฟ เก็บย้อนหลัง 24 ชม.
+		if ticks % 60 == 0 then
+			table.insert(run.history, { os.time(), run.totals().earned })
+			while #run.history > 150 do
+				table.remove(run.history, 1)
+			end
 		end
 		ticks += 1
 		if ticks % 3 == 0 then
@@ -3979,6 +4008,85 @@ function setup.roll()
 		return value .. "%"
 	end)
 
+	-- ทีมที่ประตู: miner ที่ขุดเงินจริง (เกมสลับตัวที่แรงกว่าเข้าประตูให้เอง) อ่านจาก attribute ของประตู
+	section(rollPage, "ทีมที่ประตู", "miner ที่ขุดเงินจริง ประตูละ 1 ตัว เกมสลับตัวที่แรงกว่าเข้าประตูให้เอง · แรงขุดคิดด้วยสูตรของเกม (rarity × ขนาด × mutation × คุณภาพ × เกรด)")
+	local teamCard = liveCard(rollPage)
+	local function teamText(): string
+		local plot = plotId()
+		local ok, doors = pcall(CollectionService.GetTagged, CollectionService, "MineDoor")
+		local list = {}
+		if ok and plot ~= nil then
+			for _, door in doors do
+				if tostring(door:GetAttribute("Mine")) == tostring(plot) then
+					table.insert(list, door)
+				end
+			end
+		end
+		if #list == 0 then
+			return "ยังไม่พบประตูเหมืองของแปลงนี้"
+		end
+		table.sort(list, function(a, b)
+			local keyA, keyB = a:GetAttribute("DoorKey"), b:GetAttribute("DoorKey")
+			local numA, numB = tonumber(keyA), tonumber(keyB)
+			if numA and numB then
+				return numA < numB
+			end
+			return tostring(keyA) < tostring(keyB)
+		end)
+		local lines = {}
+		local total, working, weakest = 0, 0, math.huge
+		for _, door in list do
+			local key = tostring(door:GetAttribute("DoorKey") or "?")
+			local id = door:GetAttribute("MinerId") or ""
+			local line
+			if door:GetAttribute("Locked") == true then
+				line = string.format("<font color=\"%s\">ล็อก · ปลดล็อก %s</font>", colorHex(Theme.dim), fmtCash(door:GetAttribute("UnlockCost")))
+			elseif id == "" then
+				line = string.format("<font color=\"%s\">ว่าง</font>", colorHex(Theme.accent))
+			else
+				local folder = getMinerModels()
+				local model = folder and folder:FindFirstChild(tostring(id))
+				local rarity = (model and model:GetAttribute("Rarity")) or "?"
+				local def = MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[rarity]
+				local grade = door:GetAttribute("MinerGrade")
+				local mut = door:GetAttribute("MinerMut")
+				local power = def and def.tier and team.powerOf(def.tier, team.gradeMult(grade), door:GetAttribute("MinerSize"), mut, door:GetAttribute("MinerQ"))
+				working += 1
+				if power then
+					total += power
+					weakest = math.min(weakest, power)
+				end
+				line = string.format(
+					"<font color=\"%s\"><b>%s</b></font>  %s%s%s  <font face=\"RobotoMono\" color=\"%s\">%s</font>",
+					colorHex(rarityColor(rarity)),
+					rarity,
+					escapeRich(minerDisplayName(tostring(id))),
+					if type(mut) == "string" and mut ~= "" then " · " .. escapeRich(mut) else "",
+					if type(grade) == "string" and grade ~= "" then " · เกรด " .. escapeRich(grade) else "",
+					colorHex(Theme.sub),
+					if power then string.format("%.1f/นาที", power) else "-"
+				)
+			end
+			table.insert(lines, kv(string.format("D%-3s", key), line))
+		end
+		local _, _, _, spare = team.summary()
+		table.insert(lines, "")
+		table.insert(
+			lines,
+			kv(
+				"TEAM",
+				string.format(
+					"ทำงาน %d ประตู · แรงรวม %.1f ore/นาที%s%s",
+					working,
+					total,
+					if weakest < math.huge then string.format(" · ตัวที่อ่อนสุด %.1f", weakest) else "",
+					if spare > 0 then string.format(" · ตัวสำรองที่แรงสุดในกระเป๋า %.1f", spare) else ""
+				)
+			)
+		)
+		return table.concat(lines, "\n")
+	end
+
 	local function myPedestals(): ({ Instance }, Instance?)
 		local area = myBuilding("RollArea")
 		local list = {}
@@ -4614,6 +4722,7 @@ function setup.roll()
 	end)
 
 	refreshers.Roll = function()
+		teamCard.Text = teamText()
 		local pedestals = myPedestals()
 		if #pedestals == 0 then
 			pedestalCard.Text = "ไม่พบแท่นสุ่มของแปลงนี้"
@@ -5609,10 +5718,64 @@ function setup.afk()
 		)
 	end
 
+	-- กราฟรายได้ต่อครึ่งชั่วโมง (ย้อนหลังสูงสุด 24 ชม.) เป็นรูปจาก quickchart.io ใส่ในข้อความ Discord
+	-- แท่งที่เป็น 0 = ช่วงที่หลุด / ไม่ได้รันสคริปต์
+	local function incomeChartUrl(): string?
+		local history = run.history
+		if #history < 3 then
+			return nil
+		end
+		local BUCKET = 1800
+		local sums: { [number]: number } = {}
+		for index = 2, #history do
+			local delta = history[index][2] - history[index - 1][2]
+			if delta > 0 then
+				local bucket = history[index][1] // BUCKET
+				sums[bucket] = (sums[bucket] or 0) + delta
+			end
+		end
+		local last = os.time() // BUCKET
+		local first = math.max(history[1][1] // BUCKET, last - 47)
+		local peak = 0
+		for bucket = first, last do
+			peak = math.max(peak, sums[bucket] or 0)
+		end
+		if peak <= 0 then
+			return nil
+		end
+		local unitIndex = math.clamp(math.floor(math.log10(peak) / 3), 0, #SHORT_SUFFIX)
+		local scale = 10 ^ (unitIndex * 3)
+		local labels, values = {}, {}
+		for bucket = first, last do
+			-- ป้ายเฉพาะต้นชั่วโมง (สั้น ๆ ให้ลิงก์รูปไม่ยาวเกิน)
+			table.insert(labels, if bucket % 2 == 0 then os.date("%H", bucket * BUCKET) else "")
+			table.insert(values, math.floor((sums[bucket] or 0) / scale * 10 + 0.5) / 10)
+		end
+		local chart = {
+			type = "bar",
+			data = { labels = labels, datasets = { { data = values, backgroundColor = "#ff8024" } } },
+			options = {
+				legend = { display = false },
+				title = { display = true, text = "Income per 30 min ($" .. (if unitIndex > 0 then SHORT_SUFFIX[unitIndex] else "") .. ")", fontColor = "#f2ece4" },
+				scales = {
+					xAxes = { { ticks = { fontColor = "#a39a8f", maxRotation = 0, autoSkip = true, maxTicksLimit = 8 }, gridLines = { display = false } } },
+					yAxes = { { ticks = { fontColor = "#a39a8f", beginAtZero = true }, gridLines = { color = "#2f2b27" } } },
+				},
+			},
+		}
+		local ok, json = pcall(HttpService.JSONEncode, HttpService, chart)
+		if not ok then
+			return nil
+		end
+		local url = "https://quickchart.io/chart?w=640&h=280&bkg=%23161412&c=" .. HttpService:UrlEncode(json)
+		-- Discord รับลิงก์รูปยาวไม่เกิน 2048 ตัวอักษร
+		return if #url <= 2000 then url else nil
+	end
+
 	local function summaryPayload(title: string): { [string]: any }
 		local minersHave, minersTotal, petsHave, petsTotal, sets = indexProgress()
 		local rate = ratePerMinute()
-		return embed(title, "Plot " .. tostring(plotId() or "?") .. (if paused then " · ⏸ หยุดอยู่" else ""), Theme.accent, {
+		local payload = embed(title, "Plot " .. tostring(plotId() or "?") .. (if paused then " · ⏸ หยุดอยู่" else ""), Theme.accent, {
 			{ name = "💰 เงินตอนนี้", value = fmtCash(cash()), inline = true },
 			{ name = "📈 ได้ในรอบนี้", value = "+" .. fmtCash(session.earned), inline = true },
 			{ name = "⏱ รายได้", value = fmtCash(rate) .. "/นาที\n" .. fmtCash(rate * 60) .. "/ชม.", inline = true },
@@ -5644,6 +5807,11 @@ function setup.afk()
 			{ name = "🎒 กระเป๋า miner", value = bagText(), inline = true },
 			{ name = "🌙 ทั้งรอบ AFK", value = runText(), inline = false },
 		})
+		local chart = incomeChartUrl()
+		if chart then
+			payload.embeds[1].image = { url = chart }
+		end
+		return payload
 	end
 
 	-- ข้อความสดใน Discord: สร้างครั้งแรกด้วย ?wait=true (ได้ id ข้อความกลับมา) แล้วแก้ข้อความเดิมทุก 1 นาที
@@ -5705,6 +5873,41 @@ function setup.afk()
 		return true, nil
 	end
 
+	-- แจ้งเจ้าของสคริปต์ว่ามีคนใช้: ส่งครั้งเดียวตอนเริ่มรอบใหม่ (ไม่ส่งซ้ำตอนหลุดแล้วเข้าเซิร์ฟใหม่)
+	-- ผู้ใช้เห็นใน Log ทุกครั้งว่าส่งอะไรไป และปิดได้ในหัวข้อ "สคริปต์" ของแท็บนี้
+	local function reportUsage()
+		if not (config.shareUsage and httpRequest and validWebhook(OWNER_WEBHOOK)) or os.time() - run.startedAt > 120 then
+			return
+		end
+		local executor = "ไม่ทราบ"
+		if typeof(identifyexecutor) == "function" then
+			local ok, name, executorVersion = pcall(identifyexecutor)
+			if ok and name then
+				executor = tostring(name) .. (if executorVersion then " " .. tostring(executorVersion) else "")
+			end
+		end
+		local payload = embed(
+			"👤 มีคนเปิดใช้ Back Soyer",
+			string.format("**%s** (@%s)\nhttps://www.roblox.com/users/%d/profile", localPlayer.DisplayName, localPlayer.Name, localPlayer.UserId),
+			Theme.info,
+			{
+				{ name = "เวอร์ชัน", value = "v" .. VERSION, inline = true },
+				{ name = "Executor", value = executor, inline = true },
+				{ name = "เงินตอนเริ่ม", value = fmtCash(cash()), inline = true },
+			}
+		)
+		local ok = pcall(httpRequest, {
+			Url = OWNER_WEBHOOK,
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = HttpService:JSONEncode(payload),
+		})
+		if ok then
+			log("info", "แจ้งเจ้าของสคริปต์แล้วว่าคุณเปิดใช้ (ชื่อผู้เล่น · เวอร์ชัน · executor) ปิดได้ในแท็บ AFK หัวข้อ 'สคริปต์'")
+		end
+	end
+	task.delay(5, reportUsage)
+
 	section(
 		miscPage,
 		"โหมดสบายจัด",
@@ -5746,6 +5949,70 @@ function setup.afk()
 			end,
 		},
 	})
+
+	-- โหมดเร็ว: เปลี่ยนค่าทั้งชุดทีเดียว (เปลี่ยนเฉพาะค่าที่ระบุ ที่เหลือไม่แตะ)
+	local PRESETS: { { name: string, desc: string, values: { [string]: any } } } = {
+		{
+			name = "ปั๊มเงิน",
+			desc = "อัพเกรดคุ้มสุดเต็มที่ ไม่ตามเก็บ Index ซื้อเฉพาะ miner ที่ทำให้ทีมแรงขึ้น",
+			values = {
+				autoUpgrade = true, upgradeMode = "value", reservePct = 0, autoIndex = false, indexPets = false,
+				autoRoll = true, smartBuy = true, rollMaxSpendPct = 60, stormHunter = true, stormSavePct = 30,
+				buyEggs = true, eggMaxSpendPct = 15, drinkPotions = true, buyPotions = true, autoGrade = false,
+			},
+		},
+		{
+			name = "เก็บ Index",
+			desc = "ตามเก็บ miner กับสัตว์ที่ขาดจนครบชุด ยอมจ่ายเต็มที่ ไข่ใช้เงินได้ 40%",
+			values = {
+				autoIndex = true, indexPets = true, indexMaxSpendPct = 100, autoRoll = true,
+				autoHatch = true, buyEggs = true, eggMaxSpendPct = 40, stormSavePct = 50,
+			},
+		},
+		{
+			name = "ล่าพายุจัดเต็ม",
+			desc = "ก่อนพายุเก็บเงินทั้งหมด ช่วงพายุใช้ซื้อ miner ที่มี mutation ได้เต็ม",
+			values = {
+				stormHunter = true, stormSavePct = 100, stormSpendPct = 100, autoRoll = true, smartBuy = true,
+				drinkPotions = true, buyPotions = true,
+			},
+		},
+		{
+			name = "ประหยัด",
+			desc = "กันเงิน 30% ไม่ให้อัพเกรดแตะ และลดเพดานการซื้อทุกอย่าง",
+			values = {
+				reservePct = 30, rollMaxSpendPct = 40, indexMaxSpendPct = 50, eggMaxSpendPct = 10,
+				potionMaxSpendPct = 20, stormSpendPct = 60, autoGrade = false, spinTickets = false,
+			},
+		},
+	}
+	local function applyPreset(preset: { name: string, desc: string, values: { [string]: any } })
+		for key, value in preset.values do
+			config[key] = value
+		end
+		saveConfig()
+		refreshAllRows()
+		log("good", "เปลี่ยนเป็นโหมด " .. preset.name .. ": " .. preset.desc)
+		toast("โหมด " .. preset.name .. " · " .. preset.desc, Theme.accent)
+	end
+	local presetDesc = {}
+	for _, preset in PRESETS do
+		table.insert(presetDesc, preset.name .. " = " .. preset.desc)
+	end
+	section(miscPage, "โหมดเร็ว", "กดทีเดียวเปลี่ยนค่าทั้งชุด (ค่าอื่นไม่แตะ) · " .. table.concat(presetDesc, " · "))
+	for row = 0, 1 do
+		local defs = {}
+		for column = 1, 2 do
+			local preset = PRESETS[row * 2 + column]
+			table.insert(defs, {
+				label = preset.name,
+				callback = function()
+					applyPreset(preset)
+				end,
+			})
+		end
+		buttonRow(miscPage, defs)
+	end
 
 	section(miscPage, "กันหลุด + ดูแลตัวเอง")
 	local afkRow = toggleRow(miscPage, "antiAfk", "Anti-AFK", "กันโดนเตะออกเพราะไม่ได้ขยับ 20 นาที")
@@ -6501,6 +6768,14 @@ function setup.afk()
 
 	section(miscPage, "สคริปต์")
 	local capabilityCard = liveCard(miscPage)
+	if OWNER_WEBHOOK ~= "" then
+		toggleRow(
+			miscPage,
+			"shareUsage",
+			"แจ้งเจ้าของสคริปต์ว่าคุณใช้อยู่",
+			"ส่งชื่อผู้เล่น เวอร์ชัน และ executor ให้เจ้าของสคริปต์ 1 ครั้งต่อการเปิดใช้ ไม่ส่งอย่างอื่น"
+		)
+	end
 	local function yesNo(value: boolean): string
 		return string.format("<font color=\"%s\">%s</font>", colorHex(if value then Theme.good else Theme.bad), if value then "มี" else "ไม่มี")
 	end
