@@ -1,5 +1,5 @@
 --[[
-	Back Soyer · All-in-One AFK  (v2.7)
+	Back Soyer · All-in-One AFK  (v2.7.1)
 
 	วิธีใช้
 	- รันผ่าน executor (Volt): ก็อปทั้งไฟล์ แล้วกด Execute
@@ -17,7 +17,7 @@
 	ทุกระบบใช้ remote / ปุ่มเดียวกับที่เกมใช้ตอนเรากดเอง (อ่านจากโค้ดเกมที่ดึงมา) และใช้เงินในเกมเท่านั้น
 ]]
 
-local VERSION = "2.7"
+local VERSION = "2.7.1"
 -- Webhook ของเจ้าของสคริปต์: ทุกคนที่รันสคริปต์จะแจ้งชื่อเข้าห้องนี้ 1 ครั้งต่อการเปิดใช้ (ว่าง = ไม่แจ้ง)
 -- คนที่ได้ไฟล์นี้ไปอ่านลิงก์นี้ได้ ใช้ Webhook แยกห้องเฉพาะสำหรับเรื่องนี้
 local OWNER_WEBHOOK = "https://ptb.discord.com/api/webhooks/1559828908356927539/k6TrgenxIQj7teeDs13LRk4QthZpB-T9DIz79b2Vs5LBNHdtMhJFgJrwX2bLqSQcD6Lu"
@@ -227,6 +227,23 @@ local function safeRequire(name: string): any
 	return if ok then result else nil
 end
 
+-- เรียกฟังก์ชันในโมดูลของเกมบนเธรดแยกที่ทิ้งได้: โค้ดเกมที่แตะ Instance ทำให้เธรดเสียสิทธิ์ของ executor
+-- (สร้าง UI ต่อไม่ได้ "lacking capability Plugin") เธรดหลักของสคริปต์เลยไม่โดนไปด้วย
+-- คืนค่าแบบ pcall · โค้ดเกมที่หยุดรอ (yield) ถือว่าไม่สำเร็จ ให้ผู้เรียกใช้ค่าสำรอง
+local function gameCall(fn: any, ...: any): (boolean, ...any)
+	local args = table.pack(...)
+	local result: { [number]: any, n: number } = { n = 0 }
+	local finished = false
+	task.spawn(function()
+		result = table.pack(pcall(fn, table.unpack(args, 1, args.n)))
+		finished = true
+	end)
+	if not finished then
+		return false, "โค้ดของเกมยังไม่ตอบกลับ"
+	end
+	return table.unpack(result, 1, result.n)
+end
+
 local Economy = safeRequire("Economy")
 local Upgrades = safeRequire("Upgrades")
 local MinerCatalog = safeRequire("MinerCatalog")
@@ -243,7 +260,7 @@ local SPIN_TIME = (SpinWheel and SpinWheel.SPIN_TIME) or 5
 local SAFE_MULT = (Economy and Economy.SMELT_SAFE) or 1.25
 local GAMBLE_EV = 1.3175
 if Economy and Economy.gambleExpected then
-	local ok, ev = pcall(Economy.gambleExpected)
+	local ok, ev = gameCall(Economy.gambleExpected)
 	if ok and type(ev) == "number" then
 		GAMBLE_EV = ev
 	end
@@ -357,7 +374,7 @@ local SHORT_SUFFIX = { "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "
 local function fmtCash(value: any): string
 	local n = math.floor(num(value))
 	if Economy and Economy.formatCash and n >= 0 then
-		local ok, textValue = pcall(Economy.formatCash, n)
+		local ok, textValue = gameCall(Economy.formatCash, n)
 		if ok and type(textValue) == "string" then
 			return textValue
 		end
@@ -507,7 +524,7 @@ local function minerPool(): { [string]: { string } }
 	local pool = {}
 	local folder = getMinerModels()
 	if MinerCatalog and MinerCatalog.poolFrom and folder then
-		local ok, result = pcall(MinerCatalog.poolFrom, folder)
+		local ok, result = gameCall(MinerCatalog.poolFrom, folder)
 		if ok and type(result) == "table" then
 			pool = result
 		end
@@ -2132,7 +2149,7 @@ function team.powerOf(tier: number, gradeMult: number, size: any, mut: any, q: a
 	if not (traits and traits.minerPower) then
 		return nil
 	end
-	local ok, value = pcall(traits.minerPower, tier, gradeMult, size, if mut == "" then nil else mut, q)
+	local ok, value = gameCall(traits.minerPower, tier, gradeMult, size, if mut == "" then nil else mut, q)
 	return if ok and type(value) == "number" then value else nil
 end
 
@@ -2150,7 +2167,7 @@ end
 function team.gradeMult(grade: any): number
 	local grades = team.Grades
 	if grades and grades.mult then
-		local ok, value = pcall(grades.mult, grade)
+		local ok, value = gameCall(grades.mult, grade)
 		if ok and type(value) == "number" then
 			return value
 		end
@@ -2235,6 +2252,16 @@ local cleanupHooks: { () -> () } = {}
 -- แต่ละแท็บสร้างในฟังก์ชันของตัวเอง: ตัวแปรภายในแท็บไม่ไปรวมกับตัวแปรหลักของสคริปต์
 -- (Luau จำกัด 200 ตัวต่อฟังก์ชัน และ executor บางตัวคอมไพล์แบบที่นับค่าคงที่เป็นตัวแปรด้วย)
 local setup = {}
+
+-- สร้างแต่ละส่วนแยกกัน: ส่วนไหนพังก็ยังสร้างส่วนที่เหลือต่อ และบอกใน Log / console ว่าพังตรงไหน
+local function runSetup(name: string, fn: () -> ())
+	local ok, err = pcall(fn)
+	if not ok then
+		local message = "สร้างส่วน " .. name .. " ไม่สำเร็จ: " .. tostring(err)
+		warn("[BackSoyer] " .. message)
+		pcall(log, "bad", message)
+	end
+end
 
 -- ลูปของแต่ละระบบ: ทำงานเมื่อเปิดอยู่ error แล้วไม่หยุด และไม่ log error ซ้ำ ๆ
 local function startLoop(name: string, key: string?, interval: number, row: Row?, step: () -> ())
@@ -2554,7 +2581,7 @@ function setup.farm()
 		end
 		local value = 0
 		if Economy and Economy.carryValue then
-			local ok, result = pcall(Economy.carryValue, list)
+			local ok, result = gameCall(Economy.carryValue, list)
 			if ok and type(result) == "number" then
 				value = result * num(pAttr("OreMult"), 1)
 			end
@@ -2912,7 +2939,7 @@ function setup.farm()
 		}, "\n")
 	end
 end
-setup.farm()
+runSetup("farm", setup.farm)
 
 ---------------------------------------------------------------------
 -- 13) UPGRADES: รวมทุกอย่างที่ซื้อได้ แล้ววาปไปซื้อที่ป้าย (เกมให้อัพเฉพาะตอนยืนที่ป้าย)
@@ -3101,7 +3128,7 @@ function setup.upgrades()
 		if type(fn) ~= "function" then
 			return 0.01
 		end
-		local ok, now, nextValue = pcall(function()
+		local ok, now, nextValue = gameCall(function()
 			return fn(level), fn(level + 1)
 		end)
 		if not ok or type(now) ~= "number" or type(nextValue) ~= "number" or now <= 0 then
@@ -3127,7 +3154,7 @@ function setup.upgrades()
 			end
 			local cap = num(stockModel:GetAttribute("CrateSize")) * ((Upgrades and Upgrades.STOCK_CRATES) or 54)
 			if cap <= 0 and Upgrades and Upgrades.stockCap then
-				local ok, result = pcall(Upgrades.stockCap, statLevel("StockCap", myBoard("Stock")))
+				local ok, result = gameCall(Upgrades.stockCap, statLevel("StockCap", myBoard("Stock")))
 				cap = if ok then num(result) else 0
 			end
 			fill = if cap > 0 then stored / cap else 0
@@ -3139,7 +3166,7 @@ function setup.upgrades()
 		end
 		local carry = 10
 		if Upgrades and Upgrades.haulCarry then
-			local ok, result = pcall(Upgrades.haulCarry, statLevel("HaulCarry", myBoard("Stock")))
+			local ok, result = gameCall(Upgrades.haulCarry, statLevel("HaulCarry", myBoard("Stock")))
 			carry = if ok then num(result, carry) else carry
 		end
 		local lowest, fullest = math.huge, 0
@@ -3195,8 +3222,9 @@ function setup.upgrades()
 
 	-- Quarry: แร่ชนิดใหม่แพงกว่าเดิมกี่ % (คิดครึ่งเดียว เผื่อไม่ได้เปลี่ยนแร่ทุกประตู)
 	function roi.quarryGain(board: Instance): number
-		local ok, now, nextValue = pcall(function()
-			return Economy.oreValue(board:GetAttribute("Ore")), Economy.oreValue(board:GetAttribute("NextOre"))
+		local ore, nextOre = board:GetAttribute("Ore"), board:GetAttribute("NextOre")
+		local ok, now, nextValue = gameCall(function()
+			return Economy.oreValue(ore), Economy.oreValue(nextOre)
 		end)
 		if ok and type(now) == "number" and type(nextValue) == "number" and now > 0 and nextValue > now then
 			return math.min(nextValue / now - 1, 1) * 0.5
@@ -3284,7 +3312,7 @@ function setup.upgrades()
 				local level = statLevel(stat, board)
 				local cost = board and board:GetAttribute("UpCost_" .. stat)
 				if type(cost) ~= "number" and Upgrades and Upgrades.cost then
-					local ok, value = pcall(Upgrades.cost, stat, level)
+					local ok, value = gameCall(Upgrades.cost, stat, level)
 					cost = if ok then value else nil
 				end
 				if type(cost) == "number" and cost < math.huge then
@@ -3377,7 +3405,7 @@ function setup.upgrades()
 					local max = num(board:GetAttribute("Max_" .. key), def and def.max or 0)
 					local cost = board:GetAttribute("UpCost_" .. key)
 					if type(cost) ~= "number" and PetFarm.cost then
-						local ok, value = pcall(PetFarm.cost, key, level)
+						local ok, value = gameCall(PetFarm.cost, key, level)
 						cost = if ok then value else nil
 					end
 					if level < max and type(cost) == "number" and cost < math.huge then
@@ -3413,7 +3441,7 @@ function setup.upgrades()
 				local item = GeneralStore.BY_ID[id]
 				local have = num(owned[id])
 				if config["store_" .. id] and item and (item.max == nil or have < item.max) then
-					local ok, price = pcall(GeneralStore.price, item, have, income)
+					local ok, price = gameCall(GeneralStore.price, item, have, income)
 					if ok and type(price) == "number" and price < math.huge then
 						table.insert(list, {
 							name = string.format("%s %d/%s", item.name or id, have + 1, tostring(item.max or "?")),
@@ -3955,7 +3983,7 @@ function setup.grade(page: Instance)
 	end
 	startLoop("Auto Grade", "autoGrade", 20, gradeRow, gradeCycle)
 end
-setup.upgrades()
+runSetup("upgrades", setup.upgrades)
 
 ---------------------------------------------------------------------
 -- 14) ROLL: ซื้อ miner จากแท่นสุ่มของเรา (RollArea_<plot>/PedestalN)
@@ -4126,7 +4154,7 @@ function setup.roll()
 		local def = MinerCatalog and MinerCatalog.BY_NAME and MinerCatalog.BY_NAME[rarity]
 		local price = (def and def.price) or 0
 		if def and Economy and Economy.minerPrice then
-			local ok, value = pcall(Economy.minerPrice, def, pedestal:GetAttribute("ResultSize"), pedestal:GetAttribute("ResultMut"), pedestal:GetAttribute("ResultQ"))
+			local ok, value = gameCall(Economy.minerPrice, def, pedestal:GetAttribute("ResultSize"), pedestal:GetAttribute("ResultMut"), pedestal:GetAttribute("ResultQ"))
 			if ok and type(value) == "number" then
 				price = value
 			end
@@ -4806,7 +4834,7 @@ function setup.roll()
 		pedestalCard.Text = table.concat(lines, "\n")
 	end
 end
-setup.roll()
+runSetup("roll", setup.roll)
 
 ---------------------------------------------------------------------
 -- 14.5) INDEX: สมุดสะสม miner + สัตว์ (หน้าสถานะ + ตั้งค่า งานจริงอยู่ในระบบ Roll / Pets)
@@ -4930,7 +4958,7 @@ function setup.index()
 		}, "\n")
 	end
 end
-setup.index()
+runSetup("index", setup.index)
 
 ---------------------------------------------------------------------
 -- 15) PETS: ฟักไข่ / วางไข่ / ซื้อไข่ / ปลดล็อกฟาร์ม
@@ -5141,8 +5169,10 @@ function setup.pets()
 		for _, block in PetCatalog.BLOCKS or {} do
 			local entry = stock[block.key]
 			local left = if type(entry) == "table" then num(entry[1]) else 0
-			if left > 0 and PetCatalog.unlocked(block.key, quarry) then
-				local price = PetCatalog.price(block.key)
+			local _, unlocked = gameCall(PetCatalog.unlocked, block.key, quarry)
+			if left > 0 and unlocked == true then
+				local _, price = gameCall(PetCatalog.price, block.key)
+				price = num(price, math.huge)
 				-- ไข่ของชุด Index ที่ยังไม่ครบมาก่อน เลือกชุดที่ต้นทุนให้ครบต่ำสุด (ฟองที่ต้องฟัก × ราคา) ไม่งั้นเอาระดับสูงสุด
 				local toGo = if config.indexPets then eggsToComplete(block.key, indexedPets) else 0
 				local forIndex = toGo > 0
@@ -5215,7 +5245,7 @@ function setup.pets()
 		petCard.Text = table.concat(lines, "\n")
 	end
 end
-setup.pets()
+runSetup("pets", setup.pets)
 
 ---------------------------------------------------------------------
 -- 16) REWARDS: Daily / Quest / Spin / Group / ยา / ร้านทั่วไป / กล่อง Robux
@@ -5342,7 +5372,8 @@ function setup.rewards()
 	local function doSpin()
 		local now = workspace:GetServerTimeNow()
 		local freeDay = num(pAttr("SpinFreeDay"))
-		local free = SpinWheel ~= nil and freeDay < SpinWheel.day(now)
+		local _, today = gameCall(SpinWheel and SpinWheel.day, now)
+		local free = SpinWheel ~= nil and freeDay < num(today, math.huge)
 		local tickets = num(pAttr("SpinTickets"))
 		if not free and tickets <= 0 then
 			spinRow.setStatus("หมุนฟรีวันนี้แล้ว · ไม่มีตั๋ว", Theme.sub)
@@ -5448,7 +5479,7 @@ function setup.rewards()
 					local left = if type(entry) == "table" then num(entry[1]) else 0
 					local item = Potions.BY_ID[id]
 					if left > 0 and item then
-						local ok, price = pcall(Potions.price, item, income, false)
+						local ok, price = gameCall(Potions.price, item, income, false)
 						if ok and type(price) == "number" and price <= budget * config.potionMaxSpendPct / 100 then
 							table.insert(wanted, { id = id, price = price, name = item.name })
 							budget -= price
@@ -5502,7 +5533,7 @@ function setup.rewards()
 			for _, id in { "MysteryPotion", "RarePotion" } do
 				local item = GeneralStore.BY_ID[id]
 				if item and boughtToday(id) < num(item.daily) then
-					local ok, price = pcall(GeneralStore.price, item, 0, income)
+					local ok, price = gameCall(GeneralStore.price, item, 0, income)
 					if ok and type(price) == "number" and price <= budget * 0.25 then
 						table.insert(items, { id = id, name = item.name, price = price, before = boughtToday(id) })
 						budget -= price
@@ -5513,7 +5544,7 @@ function setup.rewards()
 		if config.spinTickets then
 			local item = GeneralStore.BY_ID.SpinTicket
 			if item then
-				local ok, price = pcall(GeneralStore.price, item, 0, income)
+				local ok, price = gameCall(GeneralStore.price, item, 0, income)
 				if ok and type(price) == "number" and price <= budget * 0.15 then
 					table.insert(items, { id = "SpinTicket", name = item.name, price = price, before = num(pAttr("SpinTickets")) })
 				end
@@ -5620,14 +5651,15 @@ function setup.rewards()
 		if data.bonus then
 			table.insert(lines, string.format("<font color=\"%s\">โบนัสเควสวันนี้รับแล้ว</font>", colorHex(Theme.sub)))
 		end
-		local free = SpinWheel ~= nil and num(pAttr("SpinFreeDay")) < SpinWheel.day(workspace:GetServerTimeNow())
+		local _, today = gameCall(SpinWheel and SpinWheel.day, workspace:GetServerTimeNow())
+		local free = SpinWheel ~= nil and num(pAttr("SpinFreeDay")) < num(today, math.huge)
 		table.insert(lines, "")
 		table.insert(lines, kv("SPIN ", string.format("%s · ตั๋ว %d", if free then "หมุนฟรีได้" else "หมุนฟรีแล้ว", num(pAttr("SpinTickets")))))
 		table.insert(lines, kv("DAILY", if pAttr("DailyReady") == true then "รับได้" else "รับแล้ว"))
 		questCard.Text = table.concat(lines, "\n")
 	end
 end
-setup.rewards()
+runSetup("rewards", setup.rewards)
 
 -- Equip Best ทุก 1 นาที (miner + สัตว์)
 startLoop("Equip Best", nil, 60, nil, function()
@@ -6870,7 +6902,7 @@ function setup.afk()
 		applyLowGfx(true)
 	end
 end
-setup.afk()
+runSetup("afk", setup.afk)
 
 ---------------------------------------------------------------------
 -- 18) LOG + สรุปรอบนี้
@@ -6930,7 +6962,7 @@ function setup.log()
 		}, "\n")
 	end
 end
-setup.log()
+runSetup("log", setup.log)
 
 ---------------------------------------------------------------------
 -- 19) หน้าต่าง: เปิด/ปิด/ย่อ/หยุด + ปุ่มลัด
@@ -6996,7 +7028,7 @@ function setup.window()
 		setWindowOpen(false)
 	end
 end
-setup.window()
+runSetup("window", setup.window)
 
 ---------------------------------------------------------------------
 -- 20) อัปเดตตัวเลขบนหน้าจอทุกครึ่งวินาที
@@ -7052,7 +7084,7 @@ function setup.refresh()
 		end
 	end)
 end
-setup.refresh()
+runSetup("refresh", setup.refresh)
 
 ---------------------------------------------------------------------
 -- 21) ปิดสคริปต์ + เริ่มทำงาน
