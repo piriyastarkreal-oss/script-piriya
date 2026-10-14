@@ -1628,6 +1628,10 @@ local refreshers: { [string]: () -> () } = {}
 -- งานที่ต้องทำตอนปิดสคริปต์
 local cleanupHooks: { () -> () } = {}
 
+-- แต่ละแท็บสร้างในฟังก์ชันของตัวเอง: ตัวแปรภายในแท็บไม่ไปรวมกับตัวแปรหลักของสคริปต์
+-- (Luau จำกัด 200 ตัวต่อฟังก์ชัน และ executor บางตัวคอมไพล์แบบที่นับค่าคงที่เป็นตัวแปรด้วย)
+local setup = {}
+
 -- ลูปของแต่ละระบบ: ทำงานเมื่อเปิดอยู่ error แล้วไม่หยุด และไม่ log error ซ้ำ ๆ
 local function startLoop(name: string, key: string?, interval: number, row: Row?, step: () -> ())
 	task.spawn(function()
@@ -1656,7 +1660,7 @@ end
 ---------------------------------------------------------------------
 -- 12) FARM: Stock → หลอม → เก็บกล่องหลอมเสร็จ → ขาย
 ---------------------------------------------------------------------
-do
+function setup.farm()
 	local farmPage = pages.Farm
 
 	-- ของที่ถืออยู่: กล่องแร่ดิบ / กล่องที่หลอมแล้ว / มูลค่า
@@ -1995,11 +1999,12 @@ do
 		)
 	end
 end
+setup.farm()
 
 ---------------------------------------------------------------------
 -- 13) UPGRADES: รวมทุกอย่างที่ซื้อได้ แล้ววาปไปซื้อที่ป้าย (เกมให้อัพเฉพาะตอนยืนที่ป้าย)
 ---------------------------------------------------------------------
-do
+function setup.upgrades()
 	local upgradePage = pages.Upgrades
 
 	section(
@@ -2539,11 +2544,12 @@ do
 		)
 	end
 end
+setup.upgrades()
 
 ---------------------------------------------------------------------
 -- 14) ROLL: ซื้อ miner จากแท่นสุ่มของเรา (RollArea_<plot>/PedestalN)
 ---------------------------------------------------------------------
-do
+function setup.roll()
 	local rollPage = pages.Roll
 
 	section(
@@ -3195,11 +3201,12 @@ do
 			)
 	end
 end
+setup.roll()
 
 ---------------------------------------------------------------------
 -- 14.5) INDEX: สมุดสะสม miner + สัตว์ (หน้าสถานะ + ตั้งค่า งานจริงอยู่ในระบบ Roll / Pets)
 ---------------------------------------------------------------------
-do
+function setup.index()
 	local indexPage = pages.Index
 
 	section(indexPage, "สมุดสะสม (Index)", "สะสมครบแต่ละชุด (miner แต่ละ rarity / สัตว์แต่ละชนิดไข่) ได้โบนัสเงิน +3% ต่อชุด ถาวร")
@@ -3293,11 +3300,12 @@ do
 		)
 	end
 end
+setup.index()
 
 ---------------------------------------------------------------------
 -- 15) PETS: ฟักไข่ / วางไข่ / ซื้อไข่ / ปลดล็อกฟาร์ม
 ---------------------------------------------------------------------
-do
+function setup.pets()
 	local petPage = pages.Pets
 
 	section(petPage, "ฟาร์มสัตว์", "ฟาร์มเปิดที่ Quarry Lv2 ไข่ซื้อได้ที่ Pet Shop ในเมือง สัตว์ช่วยเพิ่มรายได้")
@@ -3554,11 +3562,12 @@ do
 		petCard.Text = table.concat(lines, "\n")
 	end
 end
+setup.pets()
 
 ---------------------------------------------------------------------
 -- 16) REWARDS: Daily / Quest / Spin / Group / ยา / ร้านทั่วไป / กล่อง Robux
 ---------------------------------------------------------------------
-do
+function setup.rewards()
 	local rewardPage = pages.Rewards
 
 	section(rewardPage, "รางวัล", "รับของฟรีทุกอย่างที่เกมให้ ร้านในเมืองต้องวาปไป สคริปต์จะไปแล้วกลับให้เอง")
@@ -3943,6 +3952,7 @@ do
 		questCard.Text = table.concat(lines, "\n")
 	end
 end
+setup.rewards()
 
 -- Equip Best ทุก 1 นาที (miner + สัตว์)
 startLoop("Equip Best", nil, 60, nil, function()
@@ -3958,7 +3968,7 @@ end)
 ---------------------------------------------------------------------
 -- 17) AFK: โหมดสบายจัด / กันหลุด / ระบบดูแลตัวเอง / จอ AFK / Discord / วาป / Spectate
 ---------------------------------------------------------------------
-do
+function setup.afk()
 	local miscPage = pages.Misc
 
 	-- จอ AFK กับโหมดประหยัดเครื่องใช้สวิตช์ภาพ 3D ร่วมกัน: ปิด 3D ถ้าอย่างใดอย่างหนึ่งต้องการ
@@ -4679,11 +4689,12 @@ do
 		applyLowGfx(true)
 	end
 end
+setup.afk()
 
 ---------------------------------------------------------------------
 -- 18) LOG + สรุปรอบนี้
 ---------------------------------------------------------------------
-do
+function setup.log()
 	local page = pages.Log
 	local summaryHolder = new("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
@@ -4723,11 +4734,12 @@ do
 		)
 	end
 end
+setup.log()
 
 ---------------------------------------------------------------------
 -- 19) หน้าต่าง: เปิด/ปิด/ย่อ/หยุด + ปุ่มลัด
 ---------------------------------------------------------------------
-do
+function setup.window()
 	local opener = button({
 		Text = "⛏  Back Soyer",
 		TextSize = 14,
@@ -4776,11 +4788,12 @@ do
 		setWindowOpen(false)
 	end
 end
+setup.window()
 
 ---------------------------------------------------------------------
 -- 20) อัปเดตตัวเลขบนหน้าจอทุกครึ่งวินาที
 ---------------------------------------------------------------------
-do
+function setup.refresh()
 	local function weatherText(): string
 		local key = ReplicatedStorage:GetAttribute("Weather")
 		local left = num(ReplicatedStorage:GetAttribute("WeatherEnds")) - workspace:GetServerTimeNow()
@@ -4824,6 +4837,7 @@ do
 		end
 	end)
 end
+setup.refresh()
 
 ---------------------------------------------------------------------
 -- 21) ปิดสคริปต์ + เริ่มทำงาน
