@@ -1766,6 +1766,9 @@ local run = {
 	base = { earned = 0, spent = 0 },
 	baseCounters = {},
 	away = nil :: any,
+	-- rejoinPending = สคริปต์กำลังพาเข้าเซิร์ฟใหม่เอง · wasRejoin = รอบนี้เริ่มจากการเข้าเซิร์ฟใหม่อัตโนมัติ (ไม่ใช่คนกดรัน)
+	rejoinPending = false,
+	wasRejoin = false,
 	history = {} :: { { number } },
 }
 do
@@ -1780,6 +1783,7 @@ do
 			run.base.spent = num(data.spent)
 			run.baseCounters = if type(data.counters) == "table" then data.counters else {}
 			run.away = if type(data.away) == "table" then data.away else nil
+			run.wasRejoin = data.rejoinPending == true and os.time() - num(data.savedAt) <= 5 * 60
 			if type(data.history) == "table" then
 				for _, point in data.history do
 					if type(point) == "table" and tonumber(point[1]) and tonumber(point[2]) then
@@ -1821,6 +1825,7 @@ function run.save()
 				counters = counterData,
 				away = run.away,
 				history = run.history,
+				rejoinPending = run.rejoinPending,
 			})
 		)
 	end)
@@ -4025,13 +4030,19 @@ function setup.roll()
 		if #list == 0 then
 			return "ยังไม่พบประตูเหมืองของแปลงนี้"
 		end
+		-- เรียงตามเลขประตู (ชื่อที่ไม่ใช่ตัวเลขไว้ท้าย) · คีย์ปนกันต้องเรียงแบบคงที่ ไม่งั้น table.sort error
+		local function sortKey(door: Instance): (number, string)
+			local key = door:GetAttribute("DoorKey")
+			local number = tonumber(key)
+			return if number then 0 else 1, if number then string.format("%012.3f", number) else tostring(key)
+		end
 		table.sort(list, function(a, b)
-			local keyA, keyB = a:GetAttribute("DoorKey"), b:GetAttribute("DoorKey")
-			local numA, numB = tonumber(keyA), tonumber(keyB)
-			if numA and numB then
-				return numA < numB
+			local groupA, textA = sortKey(a)
+			local groupB, textB = sortKey(b)
+			if groupA ~= groupB then
+				return groupA < groupB
 			end
-			return tostring(keyA) < tostring(keyB)
+			return textA < textB
 		end)
 		local lines = {}
 		local total, working, weakest = 0, 0, math.huge
@@ -4060,7 +4071,7 @@ function setup.roll()
 					"<font color=\"%s\"><b>%s</b></font>  %s%s%s  <font face=\"RobotoMono\" color=\"%s\">%s</font>",
 					colorHex(rarityColor(rarity)),
 					rarity,
-					escapeRich(minerDisplayName(tostring(id))),
+					escapeRich(tostring(minerDisplayName(tostring(id)))),
 					if type(mut) == "string" and mut ~= "" then " · " .. escapeRich(mut) else "",
 					if type(grade) == "string" and grade ~= "" then " · เกรด " .. escapeRich(grade) else "",
 					colorHex(Theme.sub),
@@ -4722,7 +4733,11 @@ function setup.roll()
 	end)
 
 	refreshers.Roll = function()
-		teamCard.Text = teamText()
+		-- แสดงทีมไม่ได้ให้บอกเหตุผลบนการ์ด (ไม่ค้างเป็น "..." เงียบ ๆ)
+		local teamOk, teamResult = pcall(teamText)
+		teamCard.Text = if teamOk
+			then teamResult
+			else string.format("<font color=\"%s\">แสดงทีมไม่ได้: %s</font>", colorHex(Theme.bad), escapeRich(tostring(teamResult)))
 		local pedestals = myPedestals()
 		if #pedestals == 0 then
 			pedestalCard.Text = "ไม่พบแท่นสุ่มของแปลงนี้"
@@ -5873,10 +5888,16 @@ function setup.afk()
 		return true, nil
 	end
 
-	-- แจ้งเจ้าของสคริปต์ว่ามีคนใช้: ส่งครั้งเดียวตอนเริ่มรอบใหม่ (ไม่ส่งซ้ำตอนหลุดแล้วเข้าเซิร์ฟใหม่)
-	-- ผู้ใช้เห็นใน Log ทุกครั้งว่าส่งอะไรไป และปิดได้ในหัวข้อ "สคริปต์" ของแท็บนี้
+	-- แจ้งเจ้าของสคริปต์ว่ามีคนใช้: ส่งทุกครั้งที่กดรันเอง (ไม่ส่งซ้ำตอนสคริปต์เข้าเซิร์ฟใหม่ให้เองหลังหลุด)
+	-- ผู้ใช้เห็นใน Log ทุกครั้งว่าส่งไปไหม และปิดได้ในหัวข้อ "สคริปต์" ของแท็บนี้
 	local function reportUsage()
-		if not (config.shareUsage and httpRequest and validWebhook(OWNER_WEBHOOK)) or os.time() - run.startedAt > 120 then
+		if OWNER_WEBHOOK == "" or not config.shareUsage or run.wasRejoin then
+			return
+		elseif not validWebhook(OWNER_WEBHOOK) then
+			log("bad", "แจ้งเจ้าของสคริปต์ไม่ได้: ลิงก์ OWNER_WEBHOOK ที่หัวไฟล์รูปแบบไม่ถูก")
+			return
+		elseif not httpRequest then
+			log("bad", "แจ้งเจ้าของสคริปต์ไม่ได้: executor นี้ส่งข้อมูลออกเน็ตไม่ได้")
 			return
 		end
 		local executor = "ไม่ทราบ"
@@ -5896,14 +5917,12 @@ function setup.afk()
 				{ name = "เงินตอนเริ่ม", value = fmtCash(cash()), inline = true },
 			}
 		)
-		local ok = pcall(httpRequest, {
-			Url = OWNER_WEBHOOK,
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = HttpService:JSONEncode(payload),
-		})
+		local ok, code, info = sendRaw(OWNER_WEBHOOK, "POST", payload)
 		if ok then
 			log("info", "แจ้งเจ้าของสคริปต์แล้วว่าคุณเปิดใช้ (ชื่อผู้เล่น · เวอร์ชัน · executor) ปิดได้ในแท็บ AFK หัวข้อ 'สคริปต์'")
+		else
+			-- 404 = Webhook ถูกลบไปแล้ว · 401 = ลิงก์ผิด · 429 = ส่งถี่เกิน
+			log("bad", "แจ้งเจ้าของสคริปต์ไม่สำเร็จ: " .. (if code then "Discord ตอบกลับรหัส " .. code else tostring(info)))
 		end
 	end
 	task.delay(5, reportUsage)
@@ -6332,6 +6351,7 @@ function setup.afk()
 		rejoining = true
 		log("warn", "หลุดจากเกม (" .. reason .. ") กำลังเข้าใหม่...")
 		run.rejoins += 1
+		run.rejoinPending = true
 		run.save()
 		if queueTeleport and canFile then
 			-- ไฟล์ชื่อใหม่ก่อน ถ้ายังไม่ได้เซฟชื่อใหม่ใช้ไฟล์ชื่อเดิม
