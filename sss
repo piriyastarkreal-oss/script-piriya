@@ -1,37 +1,23 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 
--- ==========================================
--- CONFIGURATION & SETTINGS
--- ==========================================
-local TWEEN_SPEED = 80 -- ความเร็วในการ Tween (Studs/sec)
+local tweenSpeed = 500
 
--- ลำดับความโหด/ความหายาก (โหดสุด -> รองลงมา)[cite: 1]
 local CHARACTER_PRIORITY = {
-	-- Tier 1: Zenith[cite: 1]
 	["Satoru Gojo (Limitless Eyes)"] = 1,
-	
-	-- Tier 2: Absolute[cite: 1]
 	["Yuuki Konno (Violet Duelist)"] = 2,
 	["Monkey D. Luffy - Gear 5 (Luffo Ascended)"] = 3,
 	["Yuta Okkotsu (Yutao)"] = 4,
-	
-	-- Tier 3: Infinite[cite: 1]
 	["Yuno Grinberryall (Yunao)"] = 5,
 	["Yuji Itadori (Yujo)"] = 6,
 	["Yoruichi Shihoin (Yoru)"] = 7,
 }
 
--- ==========================================
--- HELPER FUNCTIONS
--- ==========================================
-
--- ฟังก์ชันหา Plot ของตัวเองเพื่อใช้เป็นจุดกลับ
 local function getOwnPlot()
 	local plots = workspace:FindFirstChild("Plots")
 	if not plots then return nil end
-	
 	for _, plot in ipairs(plots:GetChildren()) do
 		if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
 			return plot
@@ -40,61 +26,47 @@ local function getOwnPlot()
 	return nil
 end
 
--- ฟังก์ชัน Tween แบบย้ายทั้ง Character อย่างปลอดภัย
 local function safeTweenCharacter(targetCFrame)
 	local character = LocalPlayer.Character
 	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
-	
 	local hrp = character.HumanoidRootPart
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	
 	local startCFrame = hrp.CFrame
 	local distance = (startCFrame.Position - targetCFrame.Position).Magnitude
-	local duration = math.max(0.05, distance / TWEEN_SPEED)
-	
+	local duration = math.max(0.001, distance / math.max(1, tweenSpeed))
 	if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
 	hrp.Anchored = true
-	
 	local cframeValue = Instance.new("CFrameValue")
 	cframeValue.Value = startCFrame
-	
 	local connection
 	connection = cframeValue.Changed:Connect(function(newCFrame)
 		if character and character.Parent then
 			character:PivotTo(newCFrame)
 		end
 	end)
-	
 	local tween = TweenService:Create(cframeValue, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
 		Value = targetCFrame
 	})
-	
 	tween:Play()
 	tween.Completed:Wait()
-	
 	connection:Disconnect()
 	cframeValue:Destroy()
 	hrp.Anchored = false
 	if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end
 end
 
--- ค้นหาเฉพาะ Hacker Lucky Block ที่อยู่นอก Plot (ในแมปด่าน 14)
 local function getSortedHackerBlocksInStage14()
 	local blocks = {}
 	local ownPlot = getOwnPlot()
-	
 	for _, desc in ipairs(workspace:GetDescendants()) do
 		if desc:IsA("Model") and desc:GetAttribute("LuckyBlock") == true then
 			local isInPlot = ownPlot and desc:IsDescendantOf(ownPlot)
-			
 			if not isInPlot then
 				local cardName = desc:GetAttribute("CardItemName") 
 					or desc:GetAttribute("CardName") 
 					or desc:GetAttribute("ItemName") 
 					or desc.Name
-				
 				local priority = CHARACTER_PRIORITY[cardName] or 999
-				
 				table.insert(blocks, {
 					Model = desc,
 					Priority = priority,
@@ -103,79 +75,193 @@ local function getSortedHackerBlocksInStage14()
 			end
 		end
 	end
-	
-	-- เรียงลำดับจากความโหดสูงสุดไปหาต่ำสุด[cite: 1]
 	table.sort(blocks, function(a, b)
 		return a.Priority < b.Priority
 	end)
-	
 	return blocks
 end
 
--- ฟังก์ชันกด ProximityPrompt ของบล็อก
 local function triggerPrompt(model)
 	local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
 	if prompt then
 		local origDist = prompt.MaxActivationDistance
-		prompt.MaxActivationDistance = 50
-		
-		task.wait(0.05)
+		prompt.MaxActivationDistance = 200
+		task.wait(0.01)
 		if typeof(fireproximityprompt) == "function" then
 			fireproximityprompt(prompt)
 		end
-		
-		task.wait(0.1)
+		task.wait(0.02)
 		prompt.MaxActivationDistance = origDist
 	end
 end
 
--- ==========================================
--- MAIN EXECUTION
--- ==========================================
-local function startFastFarmStage14()
-	print("[Stage 14 Fast Farm] เริ่มต้นค้นหา Hacker Lucky Block ในแมป...")
-	
+local isRunning = false
+
+local function startFastFarmStage14(statusLabel)
+	if isRunning then return end
+	isRunning = true
+	if statusLabel then statusLabel.Text = "Status: Scanning Blocks..." end
 	local ownPlot = getOwnPlot()
 	if not ownPlot then
-		warn("[Stage 14 Fast Farm] ไม่พบ Plot ของคุณ!")
+		if statusLabel then statusLabel.Text = "Status: Plot Not Found!" end
+		isRunning = false
 		return
 	end
-	
-	-- กำหนดจุดกลับ Plot
 	local returnCFrame = ownPlot:GetPivot()
 	local podiums = ownPlot:FindFirstChild("Podiums")
 	if podiums and podiums:FindFirstChild("1") then
 		returnCFrame = podiums["1"]:GetPivot() * CFrame.new(0, 3, 0)
 	end
-	
 	local sortedBlocks = getSortedHackerBlocksInStage14()
-	print(string.format("[Stage 14 Fast Farm] พบบล็อกในแมปทั้งหมด %d บล็อก", #sortedBlocks))
-	
 	if #sortedBlocks == 0 then
-		warn("[Stage 14 Fast Farm] ไม่พบ Hacker Lucky Block ในด่านเลย!")
+		if statusLabel then statusLabel.Text = "Status: No Blocks Found!" end
+		isRunning = false
 		return
 	end
-	
-	-- วนลูป Tween ไปเก็บทีละบล็อกตามความโหด[cite: 1]
 	for index, item in ipairs(sortedBlocks) do
 		local blockModel = item.Model
 		if blockModel and blockModel.Parent then
-			print(string.format("[%d/%d] กำลังพุ่งไปเก็บ: %s (Priority: %d)", index, #sortedBlocks, item.Name, item.Priority))
-			
+			if statusLabel then statusLabel.Text = string.format("[%d/%d] %s", index, #sortedBlocks, item.Name) end
 			local targetCFrame = blockModel:GetPivot() * CFrame.new(0, 3, 0)
 			safeTweenCharacter(targetCFrame)
-			
-			task.wait(0.1)
+			task.wait(0.01)
 			triggerPrompt(blockModel)
-			task.wait(0.2)
+			task.wait(0.02)
 		end
 	end
-	
-	-- เก็บครบแล้ว Tween วาร์ปกลับ Plot ทันที
-	print("[Stage 14 Fast Farm] เก็บครบแล้ว! กำลังวาร์ปกลับ Plot ของคุณ...")
+	if statusLabel then statusLabel.Text = "Status: Returning to Plot..." end
 	safeTweenCharacter(returnCFrame)
-	print("[Stage 14 Fast Farm] กลับถึง Plot เรียบร้อย!")
+	if statusLabel then statusLabel.Text = "Status: Completed!" end
+	isRunning = false
 end
 
--- รันสคริปต์
-task.spawn(startFastFarmStage14)
+local function createUI()
+	local oldGui = CoreGui:FindFirstChild("HackerFarmGui") or LocalPlayer.PlayerGui:FindFirstChild("HackerFarmGui")
+	if oldGui then oldGui:Destroy() end
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "HackerFarmGui"
+	screenGui.ResetOnSpawn = false
+	screenGui.Parent = (typeof(syn) == "table" or typeof(protectgui) == "function") and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "MainFrame"
+	mainFrame.Size = UDim2.new(0, 260, 0, 200)
+	mainFrame.Position = UDim2.new(0.5, -130, 0.4, -100)
+	mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Active = true
+	mainFrame.Draggable = true
+	mainFrame.Parent = screenGui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = mainFrame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(0, 255, 150)
+	stroke.Thickness = 2
+	stroke.Parent = mainFrame
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(1, 0, 0, 35)
+	title.BackgroundTransparency = 1
+	title.Text = "⚡ Stage 14 Hacker Farm"
+	title.TextColor3 = Color3.fromRGB(0, 255, 150)
+	title.TextSize = 16
+	title.Font = Enum.Font.SourceSansBold
+	title.Parent = mainFrame
+	local status = Instance.new("TextLabel")
+	status.Name = "Status"
+	status.Size = UDim2.new(1, -20, 0, 20)
+	status.Position = UDim2.new(0, 10, 0, 32)
+	status.BackgroundTransparency = 1
+	status.Text = "Status: Idle"
+	status.TextColor3 = Color3.fromRGB(200, 200, 200)
+	status.TextSize = 13
+	status.Font = Enum.Font.SourceSans
+	status.Parent = mainFrame
+	local speedFrame = Instance.new("Frame")
+	speedFrame.Name = "SpeedFrame"
+	speedFrame.Size = UDim2.new(1, -30, 0, 30)
+	speedFrame.Position = UDim2.new(0, 15, 0, 58)
+	speedFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+	speedFrame.BorderSizePixel = 0
+	speedFrame.Parent = mainFrame
+	local speedCorner = Instance.new("UICorner")
+	speedCorner.CornerRadius = UDim.new(0, 6)
+	speedCorner.Parent = speedFrame
+	local speedLabel = Instance.new("TextLabel")
+	speedLabel.Size = UDim2.new(0.5, 0, 1, 0)
+	speedLabel.BackgroundTransparency = 1
+	speedLabel.Text = " Tween Speed:"
+	speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	speedLabel.TextSize = 13
+	speedLabel.Font = Enum.Font.SourceSans
+	speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+	speedLabel.Parent = speedFrame
+	local speedBox = Instance.new("TextBox")
+	speedBox.Name = "SpeedBox"
+	speedBox.Size = UDim2.new(0.45, 0, 0.8, 0)
+	speedBox.Position = UDim2.new(0.52, 0, 0.1, 0)
+	speedBox.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+	speedBox.Text = tostring(tweenSpeed)
+	speedBox.TextColor3 = Color3.fromRGB(0, 255, 150)
+	speedBox.TextSize = 14
+	speedBox.Font = Enum.Font.SourceSansBold
+	speedBox.Parent = speedFrame
+	local boxCorner = Instance.new("UICorner")
+	boxCorner.CornerRadius = UDim.new(0, 4)
+	boxCorner.Parent = speedBox
+	speedBox.FocusLost:Connect(function()
+		local num = tonumber(speedBox.Text)
+		if num then
+			tweenSpeed = math.clamp(num, 10, 5000)
+			speedBox.Text = tostring(tweenSpeed)
+		else
+			speedBox.Text = tostring(tweenSpeed)
+		end
+	end)
+	local startBtn = Instance.new("TextButton")
+	startBtn.Name = "StartButton"
+	startBtn.Size = UDim2.new(1, -30, 0, 40)
+	startBtn.Position = UDim2.new(0, 15, 0, 98)
+	startBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 120)
+	startBtn.Text = "START ULTRA FAST FARM"
+	startBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	startBtn.TextSize = 15
+	startBtn.Font = Enum.Font.SourceSansBold
+	startBtn.Parent = mainFrame
+	local btnCorner = Instance.new("UICorner")
+	btnCorner.CornerRadius = UDim.new(0, 6)
+	btnCorner.Parent = startBtn
+	local returnBtn = Instance.new("TextButton")
+	returnBtn.Name = "ReturnButton"
+	returnBtn.Size = UDim2.new(1, -30, 0, 30)
+	returnBtn.Position = UDim2.new(0, 15, 0, 148)
+	returnBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+	returnBtn.Text = "Warp to Own Plot"
+	returnBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+	returnBtn.TextSize = 13
+	returnBtn.Font = Enum.Font.SourceSans
+	returnBtn.Parent = mainFrame
+	local retCorner = Instance.new("UICorner")
+	retCorner.CornerRadius = UDim.new(0, 6)
+	retCorner.Parent = returnBtn
+	startBtn.MouseButton1Click:Connect(function()
+		task.spawn(function()
+			startFastFarmStage14(status)
+		end)
+	end)
+	returnBtn.MouseButton1Click:Connect(function()
+		local ownPlot = getOwnPlot()
+		if ownPlot then
+			local returnCFrame = ownPlot:GetPivot()
+			local podiums = ownPlot:FindFirstChild("Podiums")
+			if podiums and podiums:FindFirstChild("1") then
+				returnCFrame = podiums["1"]:GetPivot() * CFrame.new(0, 3, 0)
+			end
+			status.Text = "Status: Warping to Plot..."
+			safeTweenCharacter(returnCFrame)
+			status.Text = "Status: At Plot"
+		end
+	end)
+end
+
+createUI()
