@@ -1,0 +1,180 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- ==========================================
+-- CONFIGURATION & SETTINGS
+-- ==========================================
+local TWEEN_SPEED = 60 -- ความเร็ว Tween (Studs/sec) แนะนำ 50-80 เพื่อไม่ให้โดน Kick
+
+-- ลำดับความโหด/ความหายาก (โหดสุด -> รองลงมา)
+local CHARACTER_PRIORITY = {
+	-- Tier 1: Zenith
+	["Satoru Gojo (Limitless Eyes)"] = 1,
+	
+	-- Tier 2: Absolute
+	["Yuuki Konno (Violet Duelist)"] = 2,
+	["Monkey D. Luffy - Gear 5 (Luffo Ascended)"] = 3,
+	["Yuta Okkotsu (Yutao)"] = 4,
+	
+	-- Tier 3: Infinite
+	["Yuno Grinberryall (Yunao)"] = 5,
+	["Yuji Itadori (Yujo)"] = 6,
+	["Yoruichi Shihoin (Yoru)"] = 7,
+}
+
+-- ==========================================
+-- HELPER FUNCTIONS
+-- ==========================================
+
+-- ฟังก์ชันหา Plot ของตัวเอง
+local function getOwnPlot()
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return nil end
+	
+	for _, plot in ipairs(plots:GetChildren()) do
+		if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+			return plot
+		end
+	end
+	return nil
+end
+
+-- ฟังก์ชัน Tween แบบย้ายทั้ง Character อย่างปลอดภัย
+local function safeTweenCharacter(targetCFrame)
+	local character = LocalPlayer.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+	
+	local hrp = character.HumanoidRootPart
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	
+	local startCFrame = hrp.CFrame
+	local distance = (startCFrame.Position - targetCFrame.Position).Magnitude
+	local duration = math.max(0.1, distance / TWEEN_SPEED)
+	
+	-- ปิดการคำนวณ Physics และการชนชั่วคราวขณะ Tween
+	if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
+	hrp.Anchored = true
+	
+	local cframeValue = Instance.new("CFrameValue")
+	cframeValue.Value = startCFrame
+	
+	local connection
+	connection = cframeValue.Changed:Connect(function(newCFrame)
+		if character and character.Parent then
+			character:PivotTo(newCFrame)
+		end
+	end)
+	
+	local tween = TweenService:Create(cframeValue, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+		Value = targetCFrame
+	})
+	
+	tween:Play()
+	tween.Completed:Wait()
+	
+	-- คืนค่าเดิม
+	connection:Disconnect()
+	cframeValue:Destroy()
+	hrp.Anchored = false
+	if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end
+end
+
+-- ฟังก์ชันดึง Hacker Lucky Blocks ทั้งหมดเรียงตามระดับ
+local function getSortedHackerBlocks()
+	local blocks = {}
+	
+	for _, desc in ipairs(workspace:GetDescendants()) do
+		if desc:IsA("Model") and desc:GetAttribute("LuckyBlock") == true then
+			-- ดึงชื่อ Card/Character จาก Attribute ต่างๆ ที่เกมใช้อยู่
+			local cardName = desc:GetAttribute("CardItemName") 
+				or desc:GetAttribute("CardName") 
+				or desc:GetAttribute("ItemName") 
+				or desc.Name
+			
+			local priority = CHARACTER_PRIORITY[cardName] or 999
+			
+			table.insert(blocks, {
+				Model = desc,
+				Priority = priority,
+				Name = cardName
+			})
+		end
+	end
+	
+	-- เรียงจากความโหดสูงสุด (Priority น้อยที่สุด) ไปหาน้อยสุด
+	table.sort(blocks, function(a, b)
+		return a.Priority < b.Priority
+	end)
+	
+	return blocks
+end
+
+-- ฟังก์ชันกด ProximityPrompt ปลอดภัย
+local function triggerPrompt(model)
+	local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if prompt then
+		-- ขยายระยะเปิดชั่วคราวเพื่อป้องกันกดไม่ติดเนื่องจาก Desync
+		local origDist = prompt.MaxActivationDistance
+		prompt.MaxActivationDistance = 30
+		
+		task.wait(0.1)
+		if typeof(fireproximityprompt) == "function" then
+			fireproximityprompt(prompt)
+		else
+			-- สำหรับ Executor ที่ใช้ ProximityPromptService
+			game:GetService("ProximityPromptService"):TagValue(prompt)
+		end
+		
+		task.wait(0.2)
+		prompt.MaxActivationDistance = origDist
+	end
+end
+
+-- ==========================================
+-- MAIN EXECUTION
+-- ==========================================
+local function startAutoFarm()
+	print("[Hacker Farm] เริ่มต้นทำงาน...")
+	
+	local ownPlot = getOwnPlot()
+	if not ownPlot then
+		warn("[Hacker Farm] ไม่พบ Plot ของคุณในเซิร์ฟเวอร์!")
+		return
+	end
+	
+	-- บันทึกจุดกลับ Plot (อิงจาก Podium 1 หรือจุดกึ่งกลางของ Plot)
+	local returnCFrame = ownPlot:GetPivot()
+	local podiums = ownPlot:FindFirstChild("Podiums")
+	if podiums and podiums:FindFirstChild("1") then
+		returnCFrame = podiums["1"]:GetPivot() * CFrame.new(0, 3, 0)
+	end
+	
+	local sortedBlocks = getSortedHackerBlocks()
+	print(string.format("[Hacker Farm] พบบล็อกทั้งหมด %d บล็อก", #sortedBlocks))
+	
+	for index, item in ipairs(sortedBlocks) do
+		local blockModel = item.Model
+		if blockModel and blockModel.Parent then
+			print(string.format("[%d/%d] กำลัง Tween ไปเก็บ: %s (Priority: %d)", index, #sortedBlocks, item.Name, item.Priority))
+			
+			-- กำหนดตำแหน่งจุดวาร์ปให้อยู่ด้านบนบล็อกเล็กน้อย
+			local targetCFrame = blockModel:GetPivot() * CFrame.new(0, 3.5, 0)
+			safeTweenCharacter(targetCFrame)
+			
+			-- รอกด ProximityPrompt
+			task.wait(0.2)
+			triggerPrompt(blockModel)
+			task.wait(0.4)
+		end
+	end
+	
+	-- เมื่อเก็บครบ ให้ Tween วาร์ปกลับ Plot
+	print("[Hacker Farm] เก็บครบทุกบล็อกแล้ว! กำลังวาร์ปกลับ Plot...")
+	safeTweenCharacter(returnCFrame)
+	print("[Hacker Farm] ถึง Plot เรียบร้อยแล้ว!")
+end
+
+-- เริ่มทำงาน
+task.spawn(startAutoFarm)
