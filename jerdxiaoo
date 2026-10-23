@@ -1,0 +1,3501 @@
+-- ════════════════════════════════════════════════════════════════
+--   J E R D D X I A O   H U B   —   UI โฉมใหม่ (ลัคกี้บล็อก • วาร์ป • ผู้เล่น)
+--   RightShift = ซ่อน/แสดงเมนู  •  ลากแถบหัวเมนูเพื่อย้ายตำแหน่ง
+-- ════════════════════════════════════════════════════════════════
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- กันสคริปต์ซ้อนกันเวลารันใหม่ (ลูปของรอบก่อนจะหยุดเอง)
+getgenv().KillstamSession = (getgenv().KillstamSession or 0) + 1
+local SESSION = getgenv().KillstamSession
+local function alive()
+    return getgenv().KillstamSession == SESSION
+end
+
+for _, oldName in ipairs({ "KillstamHub", "PiriyaMenuHub" }) do
+    local old = CoreGui:FindFirstChild(oldName)
+    if old then
+        old:Destroy()
+    end
+end
+
+-- ═════════════════════════ รายงานการใช้งาน (Discord Webhook) ═════════════════════════
+-- ใส่ลิงก์ webhook ของห้อง Discord ที่อยากให้แจ้งเตือน (เว้นว่าง = ไม่ส่ง)
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1552637151089393684/7024Z_6lDfzdyua8KgVLNEmNSieMQ6gxx6ymchOF9Exh8UFZDAHLiVcXBciAYp5jWtFm"
+
+-- ส่งแค่ครั้งแรกที่รันในเซิร์ฟนั้น รันสคริปต์ซ้ำจะไม่ส่งซ้ำ (กันสแปม)
+if WEBHOOK_URL ~= "" then
+    task.spawn(function()
+        local httpRequest = request or http_request or (syn and syn.request)
+        if not httpRequest then
+            return
+        end
+        local executor = identifyexecutor and identifyexecutor() or "ไม่ทราบ"
+        local gameName = "ไม่ทราบ"
+        pcall(function()
+            gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+        end)
+        local embed = {
+            title = "มีคนรัน JERDDXIAO",
+            color = 0xFF2E63,
+            fields = {
+                {
+                    name = "ผู้เล่น",
+                    value = string.format(
+                        "[%s (@%s)](https://www.roblox.com/users/%d/profile)",
+                        LocalPlayer.DisplayName,
+                        LocalPlayer.Name,
+                        LocalPlayer.UserId
+                    ),
+                    inline = true,
+                },
+                { name = "UserId", value = tostring(LocalPlayer.UserId), inline = true },
+                { name = "ตัวรัน", value = tostring(executor), inline = true },
+                {
+                    name = "เกม",
+                    value = string.format("[%s](https://www.roblox.com/games/%d)", gameName, game.PlaceId),
+                    inline = false,
+                },
+            },
+            footer = { text = "JERDDXIAO HUB v2.0" },
+            timestamp = DateTime.now():ToIsoDate(),
+        }
+        pcall(httpRequest, {
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = game:GetService("HttpService"):JSONEncode({ embeds = { embed } }),
+        })
+    end)
+end
+
+-- ═════════════════════════ ธีมสี ═════════════════════════
+local WHITE = Color3.new(1, 1, 1)
+local BLACK = Color3.new(0, 0, 0)
+
+local Theme = {
+    Bg = Color3.fromRGB(11, 9, 18),
+    Panel = Color3.fromRGB(17, 14, 28),
+    Card = Color3.fromRGB(24, 20, 39),
+    CardHover = Color3.fromRGB(33, 27, 53),
+    Stroke = Color3.fromRGB(62, 50, 98),
+    Off = Color3.fromRGB(44, 38, 66),
+    KnobOff = Color3.fromRGB(165, 158, 195),
+    Text = Color3.fromRGB(246, 244, 255),
+    SubText = Color3.fromRGB(150, 142, 184),
+    Muted = Color3.fromRGB(96, 89, 128),
+    Crimson = Color3.fromRGB(255, 46, 99),
+    Ember = Color3.fromRGB(255, 128, 64),
+    Gold = Color3.fromRGB(255, 196, 77),
+    Violet = Color3.fromRGB(160, 92, 255),
+    Pink = Color3.fromRGB(255, 75, 220),
+    Cyan = Color3.fromRGB(0, 214, 255),
+    Mint = Color3.fromRGB(64, 230, 160),
+}
+local TITLE_COLORS = { Theme.Crimson, Theme.Ember, Theme.Gold, WHITE, Theme.Violet, Theme.Crimson }
+
+-- ═════════════════════════ ตัวช่วยสร้าง UI ═════════════════════════
+local function create(className, props)
+    local inst = Instance.new(className)
+    local parent
+    for key, value in pairs(props or {}) do
+        if key == "Parent" then
+            parent = value
+        else
+            inst[key] = value
+        end
+    end
+    if parent then
+        inst.Parent = parent
+    end
+    return inst
+end
+
+local function corner(parent, radius)
+    return create("UICorner", { CornerRadius = UDim.new(0, radius or 10), Parent = parent })
+end
+
+local function round(parent)
+    return create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = parent })
+end
+
+local function stroke(parent, color, thickness, transparency)
+    return create("UIStroke", {
+        Color = color,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Parent = parent,
+    })
+end
+
+local function colorSeq(colors)
+    local keys = {}
+    for i, c in ipairs(colors) do
+        keys[i] = ColorSequenceKeypoint.new((i - 1) / (#colors - 1), c)
+    end
+    return ColorSequence.new(keys)
+end
+
+local function fadeSeq(points)
+    local keys = {}
+    for i, p in ipairs(points) do
+        keys[i] = NumberSequenceKeypoint.new(p[1], p[2])
+    end
+    return NumberSequence.new(keys)
+end
+
+local function gradient(parent, colors, rotation, transparency)
+    return create("UIGradient", {
+        Color = colorSeq(colors),
+        Rotation = rotation or 0,
+        Transparency = transparency,
+        Parent = parent,
+    })
+end
+
+local function tween(obj, duration, props, style, direction)
+    local t = TweenService:Create(
+        obj,
+        TweenInfo.new(duration, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out),
+        props
+    )
+    t:Play()
+    return t
+end
+
+local function text(parent, props)
+    local merged = {
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        TextColor3 = Theme.Text,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = parent,
+    }
+    for key, value in pairs(props) do
+        merged[key] = value
+    end
+    return create("TextLabel", merged)
+end
+
+-- gradient ที่หมุนวน / ไล่แสงวิ้งๆ (อัปเดตใน RenderStepped)
+local spinners = {}
+local function spin(grad, speed)
+    table.insert(spinners, { grad, speed })
+    return grad
+end
+
+local shimmers = {}
+local function shimmer(grad, speed)
+    table.insert(shimmers, { grad, speed })
+    return grad
+end
+
+local function isPress(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function chipSequence(accent)
+    return colorSeq({ accent:Lerp(WHITE, 0.3), accent, accent:Lerp(BLACK, 0.45) })
+end
+
+-- ไอคอนแบบชิปไล่สี (แทนอิโมจิ)
+local function iconChip(parent, glyph, accent, size)
+    local chip = create("Frame", {
+        Name = "Icon",
+        Size = UDim2.fromOffset(size, size),
+        BackgroundColor3 = WHITE,
+        Parent = parent,
+    })
+    corner(chip, math.floor(size * 0.3))
+    local grad = create("UIGradient", { Color = chipSequence(accent), Rotation = 135, Parent = chip })
+    local chipStroke = stroke(chip, accent:Lerp(WHITE, 0.35), 1, 0.5)
+    local length = utf8.len(glyph) or #glyph
+    local textScale = length <= 1 and 0.5 or (length == 2 and 0.36 or 0.28)
+    local label = text(chip, {
+        Size = UDim2.fromScale(1, 1),
+        Font = Enum.Font.GothamBlack,
+        Text = glyph,
+        TextColor3 = WHITE,
+        TextSize = math.floor(size * textScale),
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextStrokeTransparency = 0.65,
+    })
+    return chip, label, grad, chipStroke
+end
+
+-- เอฟเฟกต์คลื่นตอนกดปุ่ม
+local function attachRipple(button, getColor)
+    button.ClipsDescendants = true
+    button.InputBegan:Connect(function(input)
+        if not isPress(input) then
+            return
+        end
+        local absPos, absSize = button.AbsolutePosition, button.AbsoluteSize
+        if absSize.X <= 0 or absSize.Y <= 0 then
+            return
+        end
+        local circle = create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(
+                (input.Position.X - absPos.X) / absSize.X,
+                (input.Position.Y - absPos.Y) / absSize.Y
+            ),
+            Size = UDim2.fromScale(0, 0),
+            SizeConstraint = Enum.SizeConstraint.RelativeXX,
+            BackgroundColor3 = getColor and getColor() or WHITE,
+            BackgroundTransparency = 0.7,
+            ZIndex = 0,
+            Parent = button,
+        })
+        round(circle)
+        tween(circle, 0.6, { Size = UDim2.fromScale(2.4, 2.4), BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
+        task.delay(0.65, function()
+            circle:Destroy()
+        end)
+    end)
+end
+
+-- ลากย้ายได้ทั้งเมาส์และจอสัมผัส (คืนฟังก์ชันเช็คว่าเพิ่งลากหรือเปล่า)
+local function makeDraggable(handle, target)
+    local dragging, moved = false, false
+    local dragStart, startPos
+    handle.InputBegan:Connect(function(input)
+        if not isPress(input) then
+            return
+        end
+        dragging, moved = true, false
+        dragStart, startPos = input.Position, target.Position
+        local conn
+        conn = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+                conn:Disconnect()
+            end
+        end)
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then
+            return
+        end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+        local delta = input.Position - dragStart
+        if delta.Magnitude > 4 then
+            moved = true
+        end
+        if moved then
+            target.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    return function()
+        return moved
+    end
+end
+
+-- ═════════════════════════ ค่าเริ่มต้นระบบ ═════════════════════════
+getgenv().PlayerESPActive = false
+getgenv().SpectateActive = false
+getgenv().AutoHackerActive = false
+getgenv().HackerReturnHome = true
+getgenv().LuckyTweenSpeed = 350
+getgenv().LuckyInstantWarp = false
+getgenv().HackerMinSize = 2 -- 1 = ทุกขนาด, 2 = Big ขึ้นไป, 3 = Massive เท่านั้น
+getgenv().AutoUpgradeActive = false
+getgenv().UpgradeMode = "balance" -- "balance" = เกลี่ยเลเวลเท่ากัน, "cheap" = ถูกสุดก่อน, "random" = สุ่ม
+local savedPosition = nil
+local currentPositionBeforeTp = nil
+
+local ScreenGui = create("ScreenGui", {
+    Name = "KillstamHub",
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    ResetOnSpawn = false,
+    DisplayOrder = 50,
+    Parent = CoreGui,
+})
+
+-- ═════════════════════════ การแจ้งเตือน (Toast) ═════════════════════════
+local ToastHolder = create("Frame", {
+    Name = "Toasts",
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0, 12),
+    Size = UDim2.fromOffset(300, 280),
+    BackgroundTransparency = 1,
+    ZIndex = 20,
+    Parent = ScreenGui,
+})
+create("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    Padding = UDim.new(0, 8),
+    Parent = ToastHolder,
+})
+
+local toastCount = 0
+local function notify(title, message, accent, icon, duration)
+    accent = accent or Theme.Crimson
+    duration = duration or 2.4
+    toastCount = toastCount + 1
+
+    local slots = {}
+    for _, child in ipairs(ToastHolder:GetChildren()) do
+        if child:IsA("Frame") then
+            table.insert(slots, child)
+        end
+    end
+    table.sort(slots, function(a, b)
+        return a.LayoutOrder < b.LayoutOrder
+    end)
+    for i = 1, #slots - 3 do
+        slots[i]:Destroy()
+    end
+
+    local slot = create("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.fromOffset(300, 58),
+        LayoutOrder = toastCount,
+        Parent = ToastHolder,
+    })
+    local card = create("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = WHITE,
+        Parent = slot,
+    })
+    corner(card, 12)
+    gradient(card, { accent:Lerp(Theme.Panel, 0.78), Theme.Panel }, 0)
+    stroke(card, accent, 1.2, 0.25)
+    local cardScale = create("UIScale", { Scale = 0.6, Parent = card })
+    local chip = iconChip(card, icon or "!", accent, 34)
+    chip.Position = UDim2.fromOffset(12, 12)
+    text(card, {
+        Position = UDim2.fromOffset(56, 10),
+        Size = UDim2.new(1, -66, 0, 18),
+        Text = title,
+        TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    text(card, {
+        Position = UDim2.fromOffset(56, 29),
+        Size = UDim2.new(1, -66, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = message,
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local timer = create("Frame", {
+        Position = UDim2.new(0, 12, 1, -4),
+        Size = UDim2.new(1, -24, 0, 2),
+        BackgroundColor3 = accent,
+        BorderSizePixel = 0,
+        Parent = card,
+    })
+    round(timer)
+
+    tween(cardScale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+    tween(timer, duration, { Size = UDim2.new(0, 0, 0, 2) }, Enum.EasingStyle.Linear)
+    task.delay(duration, function()
+        if not slot.Parent then
+            return
+        end
+        tween(cardScale, 0.25, { Scale = 0 }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+        task.wait(0.25)
+        slot:Destroy()
+    end)
+end
+
+-- ═════════════════════════ หน้าต่างหลัก ═════════════════════════
+local WINDOW_W, WINDOW_H = 560, 500
+local COLLAPSED_H = 78
+local BODY_H = WINDOW_H - 120
+
+local MainFrame = create("Frame", {
+    Name = "MainFrame",
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0.5, -WINDOW_H / 2),
+    Size = UDim2.fromOffset(WINDOW_W, WINDOW_H),
+    BackgroundColor3 = WHITE,
+    Active = true,
+    ClipsDescendants = true,
+    Visible = false,
+    Parent = ScreenGui,
+})
+corner(MainFrame, 16)
+gradient(MainFrame, { Color3.fromRGB(26, 10, 26), Theme.Bg, Color3.fromRGB(10, 10, 28) }, 125)
+local MainStroke = stroke(MainFrame, WHITE, 2, 0)
+spin(gradient(MainStroke, { Theme.Gold, Theme.Crimson, Theme.Violet, Theme.Cyan, Theme.Gold }), 70)
+local WindowScale = create("UIScale", { Parent = MainFrame })
+
+-- ลูกแก้วเรืองแสงลอยอยู่ด้านหลัง
+local function orb(color, diameter, position, drift)
+    local outer = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = position,
+        Size = UDim2.fromOffset(diameter, diameter),
+        BackgroundColor3 = color,
+        BackgroundTransparency = 0.93,
+        ZIndex = 0,
+        Parent = MainFrame,
+    })
+    round(outer)
+    local inner = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromScale(0.55, 0.55),
+        BackgroundColor3 = color,
+        BackgroundTransparency = 0.88,
+        ZIndex = 0,
+        Parent = outer,
+    })
+    round(inner)
+    TweenService:Create(outer, TweenInfo.new(7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+        Position = position + drift,
+    }):Play()
+end
+orb(Theme.Crimson, 240, UDim2.fromScale(0.8, 0.32), UDim2.fromOffset(-24, 14))
+orb(Theme.Violet, 230, UDim2.fromScale(0.3, 0.72), UDim2.fromOffset(26, -16))
+orb(Theme.Cyan, 150, UDim2.fromScale(0.58, 0.82), UDim2.fromOffset(-14, -18))
+
+-- ─────────── แบนเนอร์หัวเมนู ───────────
+local Banner = create("Frame", {
+    Name = "Banner",
+    Position = UDim2.fromOffset(8, 8),
+    Size = UDim2.new(1, -16, 0, 62),
+    BackgroundColor3 = WHITE,
+    BackgroundTransparency = 0.05,
+    Active = true,
+    ClipsDescendants = true,
+    Parent = MainFrame,
+})
+corner(Banner, 12)
+gradient(Banner, { Color3.fromRGB(80, 14, 44), Color3.fromRGB(40, 14, 64), Color3.fromRGB(14, 20, 52) }, 0)
+local BannerStroke = stroke(Banner, WHITE, 1, 0.5)
+spin(gradient(BannerStroke, { Theme.Crimson, Theme.Violet, Theme.Gold, Theme.Crimson }), 40)
+
+local LogoRing = create("Frame", {
+    Position = UDim2.fromOffset(8, 7),
+    Size = UDim2.fromOffset(48, 48),
+    BackgroundTransparency = 1,
+    Parent = Banner,
+})
+corner(LogoRing, 14)
+local LogoRingStroke = stroke(LogoRing, WHITE, 2, 0.2)
+spin(gradient(LogoRingStroke, { Theme.Gold, Theme.Crimson, Theme.Violet, Theme.Gold }), 140)
+
+local Logo = create("Frame", {
+    Position = UDim2.fromOffset(12, 11),
+    Size = UDim2.fromOffset(40, 40),
+    BackgroundColor3 = WHITE,
+    Parent = Banner,
+})
+corner(Logo, 11)
+spin(gradient(Logo, { Theme.Crimson, Color3.fromRGB(110, 16, 60), Theme.Violet }), 50)
+text(Logo, {
+    Size = UDim2.fromScale(1, 1),
+    Font = Enum.Font.GothamBlack,
+    Text = "J",
+    TextColor3 = WHITE,
+    TextSize = 24,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextStrokeTransparency = 0.5,
+})
+
+-- ชื่อ JERDDXIAO + เงาแดง/ฟ้าแบบ glitch
+local TITLE_POS = UDim2.fromOffset(66, 5)
+local GHOST_A_POS = TITLE_POS + UDim2.fromOffset(-2, 0)
+local GHOST_B_POS = TITLE_POS + UDim2.fromOffset(2, 1)
+local function titleLayer(color, transparency, position)
+    return text(Banner, {
+        Position = position,
+        Size = UDim2.fromOffset(230, 32),
+        Font = Enum.Font.GothamBlack,
+        Text = "JERDDXIAO",
+        TextColor3 = color,
+        TextTransparency = transparency,
+        TextSize = 28,
+    })
+end
+local TitleGhostA = titleLayer(Theme.Crimson, 0.35, GHOST_A_POS)
+local TitleGhostB = titleLayer(Theme.Cyan, 0.5, GHOST_B_POS)
+local TitleMain = titleLayer(WHITE, 0, TITLE_POS)
+shimmer(gradient(TitleMain, TITLE_COLORS), 0.35)
+create("UIStroke", {
+    Color = Color3.fromRGB(120, 10, 40),
+    Thickness = 1.2,
+    Transparency = 0.2,
+    ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+    Parent = TitleMain,
+})
+
+local EditionPill = text(Banner, {
+    Position = UDim2.fromOffset(67, 39),
+    Size = UDim2.fromOffset(64, 16),
+    BackgroundTransparency = 0,
+    BackgroundColor3 = WHITE,
+    Font = Enum.Font.GothamBlack,
+    Text = "ULTIMATE",
+    TextColor3 = Color3.fromRGB(40, 20, 0),
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Center,
+})
+round(EditionPill)
+shimmer(gradient(EditionPill, { Theme.Gold, Color3.fromRGB(255, 240, 190), Theme.Ember, Theme.Gold }), 0.5)
+
+-- โปรไฟล์ผู้เล่น
+local HeaderAvatar = create("Frame", {
+    AnchorPoint = Vector2.new(1, 0.5),
+    Position = UDim2.new(1, -80, 0.5, 0),
+    Size = UDim2.fromOffset(38, 38),
+    BackgroundColor3 = Color3.fromRGB(38, 31, 67),
+    Parent = Banner,
+})
+round(HeaderAvatar)
+local HeaderAvatarStroke = stroke(HeaderAvatar, WHITE, 2, 0)
+gradient(HeaderAvatarStroke, { Color3.fromRGB(255, 243, 196), Theme.Gold, Color3.fromRGB(186, 117, 23) }, 45)
+local AvatarImage = create("ImageLabel", {
+    Name = "PlayerThumbnail",
+    BackgroundTransparency = 1,
+    Size = UDim2.fromScale(1, 1),
+    ImageTransparency = 1,
+    ScaleType = Enum.ScaleType.Crop,
+    ZIndex = 2,
+    Parent = HeaderAvatar,
+})
+round(AvatarImage)
+local AvatarInitial = text(HeaderAvatar, {
+    Size = UDim2.fromScale(1, 1),
+    Font = Enum.Font.GothamBlack,
+    Text = string.sub(LocalPlayer.Name, 1, 1):upper(),
+    TextColor3 = Color3.fromRGB(255, 243, 196),
+    TextSize = 18,
+    TextXAlignment = Enum.TextXAlignment.Center,
+})
+local OnlineDot = create("Frame", {
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, 1, 1, 1),
+    Size = UDim2.fromOffset(11, 11),
+    BackgroundColor3 = Theme.Mint,
+    ZIndex = 3,
+    Parent = HeaderAvatar,
+})
+round(OnlineDot)
+stroke(OnlineDot, Color3.fromRGB(30, 16, 50), 2, 0)
+
+text(Banner, {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -126, 0, 12),
+    Size = UDim2.fromOffset(150, 18),
+    Text = LocalPlayer.DisplayName,
+    TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+})
+text(Banner, {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -126, 0, 31),
+    Size = UDim2.fromOffset(150, 14),
+    Font = Enum.Font.GothamMedium,
+    Text = "@" .. LocalPlayer.Name,
+    TextColor3 = Theme.SubText,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+})
+
+local function headerButton(glyph, xOffset, hoverColor, textSize)
+    local btn = create("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, xOffset, 0.5, 0),
+        Size = UDim2.fromOffset(26, 26),
+        AutoButtonColor = false,
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.92,
+        Font = Enum.Font.GothamBold,
+        Text = glyph,
+        TextColor3 = Theme.Text,
+        TextSize = textSize,
+        Parent = Banner,
+    })
+    corner(btn, 8)
+    btn.MouseEnter:Connect(function()
+        tween(btn, 0.15, { BackgroundColor3 = hoverColor, BackgroundTransparency = 0.1 })
+    end)
+    btn.MouseLeave:Connect(function()
+        tween(btn, 0.15, { BackgroundColor3 = WHITE, BackgroundTransparency = 0.92 })
+    end)
+    return btn
+end
+local CloseBtn = headerButton("×", -10, Theme.Crimson, 18)
+local MinBtn = headerButton("—", -42, Theme.Violet, 12)
+
+-- ─────────── แถบข้าง / พื้นที่เนื้อหา / แถบสถานะ ───────────
+local Sidebar = create("Frame", {
+    Name = "Sidebar",
+    Position = UDim2.fromOffset(8, 78),
+    Size = UDim2.fromOffset(142, BODY_H),
+    BackgroundColor3 = Theme.Panel,
+    BackgroundTransparency = 0.2,
+    Parent = MainFrame,
+})
+corner(Sidebar, 12)
+stroke(Sidebar, Theme.Stroke, 1, 0.5)
+
+local Content = create("Frame", {
+    Name = "Content",
+    Position = UDim2.fromOffset(158, 78),
+    Size = UDim2.fromOffset(394, BODY_H),
+    BackgroundTransparency = 1,
+    ClipsDescendants = true,
+    Parent = MainFrame,
+})
+
+local Footer = create("Frame", {
+    Name = "Footer",
+    Position = UDim2.fromOffset(8, WINDOW_H - 34),
+    Size = UDim2.new(1, -16, 0, 26),
+    BackgroundColor3 = Theme.Panel,
+    BackgroundTransparency = 0.2,
+    Parent = MainFrame,
+})
+corner(Footer, 8)
+stroke(Footer, Theme.Stroke, 1, 0.5)
+local StatusDot = create("Frame", {
+    AnchorPoint = Vector2.new(0, 0.5),
+    Position = UDim2.new(0, 11, 0.5, 0),
+    Size = UDim2.fromOffset(8, 8),
+    BackgroundColor3 = Theme.Mint,
+    Parent = Footer,
+})
+round(StatusDot)
+local StatusLabel = text(Footer, {
+    Position = UDim2.fromOffset(26, 0),
+    Size = UDim2.new(1, -236, 1, 0),
+    Font = Enum.Font.GothamMedium,
+    Text = "สถานะ: พร้อมใช้งาน",
+    TextSize = 11,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+})
+local FooterRight = text(Footer, {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -11, 0, 0),
+    Size = UDim2.new(0, 200, 1, 0),
+    Text = "FPS --   •   RShift ซ่อนเมนู",
+    TextColor3 = Theme.Muted,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Right,
+})
+
+local function setStatus(message, color)
+    StatusLabel.Text = "สถานะ: " .. message
+    StatusDot.BackgroundColor3 = color or Theme.Mint
+end
+
+-- ─────────── แผง LIVE (ไฟบอกระบบที่เปิดอยู่) ───────────
+local LIVE_ITEMS = {
+    { key = "lucky", name = "เก็บ Hacker", color = Theme.Mint },
+    { key = "upgrade", name = "อัปเกรดออโต้", color = Theme.Gold },
+    { key = "esp", name = "ESP ผู้เล่น", color = Theme.Pink },
+    { key = "spec", name = "สเปคจอ", color = Theme.Gold },
+}
+local LIVE_H = 26 + #LIVE_ITEMS * 15
+
+local LivePanel = create("Frame", {
+    Position = UDim2.new(0, 8, 1, -(LIVE_H + 8)),
+    Size = UDim2.new(1, -16, 0, LIVE_H),
+    BackgroundColor3 = Theme.Card,
+    BackgroundTransparency = 0.25,
+    Parent = Sidebar,
+})
+corner(LivePanel, 10)
+stroke(LivePanel, Theme.Stroke, 1, 0.5)
+text(LivePanel, {
+    Position = UDim2.fromOffset(10, 6),
+    Size = UDim2.new(1, -20, 0, 14),
+    Font = Enum.Font.GothamBlack,
+    Text = "● LIVE",
+    TextColor3 = Theme.Crimson,
+    TextSize = 10,
+})
+local LiveCount = text(LivePanel, {
+    Position = UDim2.fromOffset(10, 6),
+    Size = UDim2.new(1, -20, 0, 14),
+    Font = Enum.Font.GothamBlack,
+    Text = "0/" .. #LIVE_ITEMS,
+    TextColor3 = Theme.SubText,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Right,
+})
+
+local liveRows = {}
+for i, item in ipairs(LIVE_ITEMS) do
+    local y = 24 + (i - 1) * 15
+    local dot = create("Frame", {
+        Position = UDim2.fromOffset(11, y + 4),
+        Size = UDim2.fromOffset(6, 6),
+        BackgroundColor3 = Theme.Off,
+        Parent = LivePanel,
+    })
+    round(dot)
+    liveRows[item.key] = {
+        dot = dot,
+        glow = stroke(dot, item.color, 2, 1),
+        name = text(LivePanel, {
+            Position = UDim2.fromOffset(24, y),
+            Size = UDim2.new(1, -60, 0, 14),
+            Font = Enum.Font.GothamMedium,
+            Text = item.name,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+        }),
+        state = text(LivePanel, {
+            Position = UDim2.fromOffset(10, y),
+            Size = UDim2.new(1, -20, 0, 14),
+            Font = Enum.Font.GothamBlack,
+            Text = "OFF",
+            TextColor3 = Theme.Muted,
+            TextSize = 9,
+            TextXAlignment = Enum.TextXAlignment.Right,
+        }),
+        color = item.color,
+        on = false,
+    }
+end
+
+local function refreshLive()
+    local states = {
+        lucky = getgenv().AutoHackerActive,
+        upgrade = getgenv().AutoUpgradeActive,
+        esp = getgenv().PlayerESPActive,
+        spec = getgenv().SpectateActive,
+    }
+    local count = 0
+    for key, row in pairs(liveRows) do
+        local on = states[key] == true
+        if on then
+            count = count + 1
+        end
+        row.on = on
+        tween(row.dot, 0.25, { BackgroundColor3 = on and row.color or Theme.Off })
+        tween(row.name, 0.25, { TextColor3 = on and Theme.Text or Theme.SubText })
+        row.state.Text = on and "ON" or "OFF"
+        row.state.TextColor3 = on and row.color or Theme.Muted
+    end
+    LiveCount.Text = count .. "/" .. #LIVE_ITEMS
+end
+
+-- ═════════════════════════ คอมโพเนนต์ ═════════════════════════
+local pages = {}
+local function createPage(id, accent)
+    local page = create("ScrollingFrame", {
+        Name = id .. "Page",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = accent,
+        ScrollBarImageTransparency = 0.2,
+        Visible = false,
+        Parent = Content,
+    })
+    create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8), Parent = page })
+    create("UIPadding", {
+        PaddingTop = UDim.new(0, 2),
+        PaddingBottom = UDim.new(0, 10),
+        PaddingLeft = UDim.new(0, 1),
+        Parent = page,
+    })
+    pages[id] = page
+    return page
+end
+
+local function createPageHeader(page, title, desc, accent)
+    local holder = create("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -10, 0, 48),
+        LayoutOrder = 0,
+        Parent = page,
+    })
+    local titleLabel = text(holder, {
+        Position = UDim2.fromOffset(2, 0),
+        Size = UDim2.new(1, -4, 0, 28),
+        Font = Enum.Font.GothamBlack,
+        Text = title,
+        TextColor3 = WHITE,
+        TextSize = 22,
+    })
+    gradient(titleLabel, { WHITE, accent:Lerp(WHITE, 0.2), accent })
+    text(holder, {
+        Position = UDim2.fromOffset(2, 29),
+        Size = UDim2.new(1, -4, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = desc,
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+end
+
+local function createSection(page, title, accent, order)
+    local holder = create("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -10, 0, 22),
+        LayoutOrder = order,
+        Parent = page,
+    })
+    local bar = create("Frame", {
+        Position = UDim2.fromOffset(2, 5),
+        Size = UDim2.fromOffset(3, 12),
+        BackgroundColor3 = WHITE,
+        BorderSizePixel = 0,
+        Parent = holder,
+    })
+    round(bar)
+    gradient(bar, { accent:Lerp(WHITE, 0.3), accent }, 90)
+    local titleLabel = text(holder, {
+        Position = UDim2.fromOffset(12, 2),
+        Size = UDim2.new(1, -12, 0, 18),
+        Text = title,
+        TextColor3 = accent:Lerp(WHITE, 0.35),
+        TextSize = 11,
+    })
+    local line = create("Frame", {
+        Position = UDim2.new(0, 2, 1, -1),
+        Size = UDim2.new(1, -2, 0, 1),
+        BackgroundColor3 = accent,
+        BorderSizePixel = 0,
+        Parent = holder,
+    })
+    gradient(line, { accent, accent }, 0, fadeSeq({ { 0, 0.4 }, { 1, 1 } }))
+    return titleLabel
+end
+
+local function createToggle(page, opts)
+    local accent = opts.accent
+    local row = create("TextButton", {
+        Name = opts.name or "Toggle",
+        AutoButtonColor = false,
+        Text = "",
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 58),
+        LayoutOrder = opts.order,
+        Parent = page,
+    })
+    corner(row, 12)
+    local rowStroke = stroke(row, Theme.Stroke, 1, 0.35)
+    attachRipple(row, function()
+        return accent
+    end)
+
+    local bar = create("Frame", {
+        Position = UDim2.fromOffset(0, 14),
+        Size = UDim2.fromOffset(3, 30),
+        BackgroundColor3 = accent,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Parent = row,
+    })
+    round(bar)
+    local chip = iconChip(row, opts.icon, accent, 38)
+    chip.Position = UDim2.fromOffset(12, 10)
+    text(row, {
+        Position = UDim2.fromOffset(60, 11),
+        Size = UDim2.new(1, -128, 0, 18),
+        Text = opts.title,
+        TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    text(row, {
+        Position = UDim2.fromOffset(60, 30),
+        Size = UDim2.new(1, -128, 0, 16),
+        Font = Enum.Font.Gotham,
+        Text = opts.desc,
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+
+    local track = create("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -14, 0.5, 0),
+        Size = UDim2.fromOffset(46, 24),
+        BackgroundColor3 = Theme.Off,
+        Parent = row,
+    })
+    round(track)
+    local trackStroke = stroke(track, Theme.Stroke, 1, 0.2)
+    local knob = create("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 3, 0.5, 0),
+        Size = UDim2.fromOffset(18, 18),
+        BackgroundColor3 = Theme.KnobOff,
+        Parent = track,
+    })
+    round(knob)
+
+    local toggle = { state = false }
+    local hovered = false
+    local function render()
+        local on = toggle.state
+        local bg = on and Theme.Card:Lerp(accent, 0.16) or (hovered and Theme.CardHover or Theme.Card)
+        tween(row, 0.2, { BackgroundColor3 = bg })
+        tween(rowStroke, 0.25, { Color = on and accent or Theme.Stroke, Transparency = on and 0.15 or 0.35 })
+        tween(bar, 0.25, { BackgroundTransparency = on and 0 or 1 })
+        tween(track, 0.25, { BackgroundColor3 = on and accent or Theme.Off })
+        tween(trackStroke, 0.25, { Color = on and accent:Lerp(WHITE, 0.35) or Theme.Stroke })
+        tween(knob, 0.35, {
+            Position = on and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+            BackgroundColor3 = on and WHITE or Theme.KnobOff,
+        }, Enum.EasingStyle.Back)
+    end
+
+    function toggle:Set(on, silent)
+        self.state = on
+        render()
+        if not silent and opts.onToggle then
+            opts.onToggle(on)
+        end
+    end
+
+    row.MouseEnter:Connect(function()
+        hovered = true
+        render()
+    end)
+    row.MouseLeave:Connect(function()
+        hovered = false
+        render()
+    end)
+    row.MouseButton1Click:Connect(function()
+        if opts.onClick then
+            opts.onClick()
+        else
+            toggle:Set(not toggle.state)
+        end
+    end)
+    render()
+    return toggle
+end
+
+local function createSlider(page, opts)
+    local accent = opts.accent
+    local fmt = "%." .. (opts.decimals or 0) .. "f"
+    local card = create("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 66),
+        LayoutOrder = opts.order,
+        Parent = page,
+    })
+    corner(card, 12)
+    stroke(card, Theme.Stroke, 1, 0.35)
+    text(card, {
+        Position = UDim2.fromOffset(14, 9),
+        Size = UDim2.new(1, -110, 0, 18),
+        Text = opts.title,
+        TextSize = 13,
+    })
+    text(card, {
+        Position = UDim2.fromOffset(14, 27),
+        Size = UDim2.new(1, -110, 0, 14),
+        Font = Enum.Font.Gotham,
+        Text = opts.desc,
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+
+    local box = create("TextBox", {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 10),
+        Size = UDim2.fromOffset(70, 26),
+        BackgroundColor3 = Theme.Bg,
+        BackgroundTransparency = 0.2,
+        Font = Enum.Font.GothamBold,
+        Text = "",
+        TextColor3 = accent:Lerp(WHITE, 0.3),
+        TextSize = 13,
+        ClearTextOnFocus = false,
+        Parent = card,
+    })
+    corner(box, 8)
+    local boxStroke = stroke(box, accent, 1, 0.55)
+
+    local track = create("Frame", {
+        Position = UDim2.new(0, 14, 0, 48),
+        Size = UDim2.new(1, -28, 0, 6),
+        BackgroundColor3 = Theme.Off,
+        Parent = card,
+    })
+    round(track)
+    local fill = create("Frame", {
+        Size = UDim2.fromScale(0, 1),
+        BackgroundColor3 = WHITE,
+        BorderSizePixel = 0,
+        Parent = track,
+    })
+    round(fill)
+    gradient(fill, { accent:Lerp(BLACK, 0.25), accent, accent:Lerp(WHITE, 0.35) })
+    local knob = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0, 0.5),
+        Size = UDim2.fromOffset(16, 16),
+        BackgroundColor3 = WHITE,
+        Parent = track,
+    })
+    round(knob)
+    stroke(knob, accent, 3, 0.15)
+    local hit = create("TextButton", {
+        Text = "",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 6, 0, 38),
+        Size = UDim2.new(1, -12, 0, 26),
+        Parent = card,
+    })
+
+    local value = opts.default
+    local function render(instant)
+        local alpha = math.clamp((value - opts.min) / (opts.max - opts.min), 0, 1)
+        if instant then
+            fill.Size = UDim2.fromScale(alpha, 1)
+            knob.Position = UDim2.fromScale(alpha, 0.5)
+        else
+            tween(fill, 0.25, { Size = UDim2.fromScale(alpha, 1) })
+            tween(knob, 0.25, { Position = UDim2.fromScale(alpha, 0.5) })
+        end
+        box.Text = string.format(fmt, value)
+    end
+    local function setValue(v, instant)
+        value = v
+        render(instant)
+        if opts.onChange then
+            opts.onChange(value)
+        end
+    end
+    local function setFromX(x)
+        local alpha = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+        local raw = opts.min + (opts.max - opts.min) * alpha
+        local stepped = tonumber(string.format(fmt, math.floor(raw / opts.step + 0.5) * opts.step))
+        setValue(math.clamp(stepped, opts.min, opts.max), true)
+    end
+
+    local dragging = false
+    hit.InputBegan:Connect(function(input)
+        if isPress(input) then
+            dragging = true
+            tween(knob, 0.15, { Size = UDim2.fromOffset(20, 20) })
+            setFromX(input.Position.X)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            setFromX(input.Position.X)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if dragging and isPress(input) then
+            dragging = false
+            tween(knob, 0.15, { Size = UDim2.fromOffset(16, 16) })
+        end
+    end)
+    box.Focused:Connect(function()
+        tween(boxStroke, 0.2, { Transparency = 0 })
+    end)
+    box.FocusLost:Connect(function()
+        tween(boxStroke, 0.2, { Transparency = 0.55 })
+        local num = tonumber(box.Text)
+        if num and num > 0 then
+            setValue(num)
+        else
+            render()
+        end
+    end)
+    render(true)
+end
+
+local function createGrid(page, columns, cellHeight, order)
+    local grid = create("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -10, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = order,
+        Parent = page,
+    })
+    create("UIGridLayout", {
+        CellSize = UDim2.new(1 / columns, -((columns - 1) * 8) / columns, 0, cellHeight),
+        CellPadding = UDim2.fromOffset(8, 8),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = grid,
+    })
+    return grid
+end
+
+local function runAction(title, callback)
+    local ok, err = pcall(callback)
+    if not ok then
+        warn("[JERDDXIAO] " .. tostring(err))
+        notify(title, "เกิดข้อผิดพลาด ลองใหม่อีกครั้ง", Theme.Crimson, "!")
+    end
+end
+
+local function createActionCard(grid, opts)
+    local accent = opts.accent
+    local card = create("TextButton", {
+        Name = opts.name or "Action",
+        AutoButtonColor = false,
+        Text = "",
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        LayoutOrder = opts.order,
+        Parent = grid,
+    })
+    corner(card, 12)
+    local cardStroke = stroke(card, Theme.Stroke, 1, 0.35)
+    attachRipple(card, function()
+        return accent
+    end)
+    local glow = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, -4),
+        Size = UDim2.new(1, -28, 0, 2),
+        BackgroundColor3 = accent,
+        BackgroundTransparency = 0.6,
+        BorderSizePixel = 0,
+        Parent = card,
+    })
+    round(glow)
+    local chip = iconChip(card, opts.icon, accent, 40)
+    chip.Position = UDim2.fromOffset(12, 12)
+    local arrow = text(card, {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 12),
+        Size = UDim2.fromOffset(20, 20),
+        Text = "→",
+        TextColor3 = Theme.Muted,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    })
+    text(card, {
+        Position = UDim2.fromOffset(12, 58),
+        Size = UDim2.new(1, -24, 0, 18),
+        Text = opts.title,
+        TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    text(card, {
+        Position = UDim2.fromOffset(12, 76),
+        Size = UDim2.new(1, -24, 0, 16),
+        Font = Enum.Font.Gotham,
+        Text = opts.desc,
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+
+    card.MouseEnter:Connect(function()
+        tween(card, 0.2, { BackgroundColor3 = Theme.CardHover })
+        tween(cardStroke, 0.2, { Color = accent, Transparency = 0.25 })
+        tween(chip, 0.3, { Rotation = -10 }, Enum.EasingStyle.Back)
+        tween(arrow, 0.25, { Position = UDim2.new(1, -7, 0, 12), TextColor3 = accent })
+        tween(glow, 0.25, { BackgroundTransparency = 0.05 })
+    end)
+    card.MouseLeave:Connect(function()
+        tween(card, 0.2, { BackgroundColor3 = Theme.Card })
+        tween(cardStroke, 0.2, { Color = Theme.Stroke, Transparency = 0.35 })
+        tween(chip, 0.3, { Rotation = 0 }, Enum.EasingStyle.Back)
+        tween(arrow, 0.25, { Position = UDim2.new(1, -12, 0, 12), TextColor3 = Theme.Muted })
+        tween(glow, 0.25, { BackgroundTransparency = 0.6 })
+    end)
+    card.MouseButton1Click:Connect(function()
+        tween(chip, 0.1, { Rotation = 14 }).Completed:Connect(function()
+            tween(chip, 0.6, { Rotation = 0 }, Enum.EasingStyle.Elastic)
+        end)
+        runAction(opts.title, opts.callback)
+    end)
+    return card
+end
+
+local function createActionRow(page, opts)
+    local accent = opts.accent
+    local row = create("TextButton", {
+        AutoButtonColor = false,
+        Text = "",
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 52),
+        LayoutOrder = opts.order,
+        Parent = page,
+    })
+    corner(row, 12)
+    local rowStroke = stroke(row, accent, 1, 0.6)
+    attachRipple(row, function()
+        return accent
+    end)
+    local chip = iconChip(row, opts.icon, accent, 32)
+    chip.Position = UDim2.fromOffset(12, 10)
+    text(row, {
+        Position = UDim2.fromOffset(54, 9),
+        Size = UDim2.new(1, -96, 0, 18),
+        Text = opts.title,
+        TextSize = 13,
+    })
+    text(row, {
+        Position = UDim2.fromOffset(54, 27),
+        Size = UDim2.new(1, -96, 0, 14),
+        Font = Enum.Font.Gotham,
+        Text = opts.desc,
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local arrow = text(row, {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -16, 0.5, 0),
+        Size = UDim2.fromOffset(20, 20),
+        Text = "→",
+        TextColor3 = accent,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    })
+    row.MouseEnter:Connect(function()
+        tween(row, 0.2, { BackgroundColor3 = Theme.Card:Lerp(accent, 0.14) })
+        tween(rowStroke, 0.2, { Transparency = 0.15 })
+        tween(arrow, 0.25, { Position = UDim2.new(1, -10, 0.5, 0) })
+    end)
+    row.MouseLeave:Connect(function()
+        tween(row, 0.2, { BackgroundColor3 = Theme.Card })
+        tween(rowStroke, 0.2, { Transparency = 0.6 })
+        tween(arrow, 0.25, { Position = UDim2.new(1, -16, 0.5, 0) })
+    end)
+    row.MouseButton1Click:Connect(function()
+        runAction(opts.title, opts.callback)
+    end)
+    return row
+end
+
+-- ═════════════════════════ หน้า: วาร์ป ═════════════════════════
+local WarpPage = createPage("Warp", Theme.Cyan)
+createPageHeader(WarpPage, "วาร์ป", "บันทึกจุด แล้วสลับไป-กลับได้ในคลิกเดียว", Theme.Cyan)
+createSection(WarpPage, "จุดวาร์ปของคุณ", Theme.Cyan, 1)
+
+local WarpInfo = create("Frame", {
+    BackgroundColor3 = WHITE,
+    BackgroundTransparency = 0.08,
+    Size = UDim2.new(1, -10, 0, 68),
+    LayoutOrder = 2,
+    Parent = WarpPage,
+})
+corner(WarpInfo, 12)
+gradient(WarpInfo, { Theme.Card:Lerp(Theme.Cyan, 0.12), Theme.Card }, 0)
+stroke(WarpInfo, Theme.Cyan, 1, 0.55)
+local warpChip = iconChip(WarpInfo, "◎", Theme.Cyan, 42)
+warpChip.Position = UDim2.fromOffset(12, 13)
+text(WarpInfo, {
+    Position = UDim2.fromOffset(64, 14),
+    Size = UDim2.new(1, -180, 0, 18),
+    Text = "จุดที่บันทึกไว้",
+    TextSize = 13,
+})
+local WarpCoords = text(WarpInfo, {
+    Position = UDim2.fromOffset(64, 34),
+    Size = UDim2.new(1, -76, 0, 16),
+    Font = Enum.Font.GothamMedium,
+    Text = "",
+    TextColor3 = Theme.SubText,
+    TextSize = 11,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+})
+local WarpPill = text(WarpInfo, {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -12, 0, 12),
+    Size = UDim2.fromOffset(0, 20),
+    AutomaticSize = Enum.AutomaticSize.X,
+    BackgroundTransparency = 0.8,
+    BackgroundColor3 = Theme.Off,
+    Font = Enum.Font.GothamBlack,
+    Text = "",
+    TextSize = 9,
+})
+round(WarpPill)
+create("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = WarpPill })
+
+local function refreshWarp()
+    if savedPosition then
+        local p = savedPosition.Position
+        WarpCoords.Text = string.format(
+            "X %d   •   Y %d   •   Z %d",
+            math.floor(p.X + 0.5),
+            math.floor(p.Y + 0.5),
+            math.floor(p.Z + 0.5)
+        )
+    else
+        WarpCoords.Text = "ยังไม่ได้ตั้งจุด — กด \"ตั้งจุดวาร์ป\" ก่อนนะ"
+    end
+    local pillText, pillColor
+    if not savedPosition then
+        pillText, pillColor = "ยังไม่ตั้ง", Theme.Muted
+    elseif currentPositionBeforeTp then
+        pillText, pillColor = "อยู่ที่จุดวาร์ป", Theme.Violet
+    else
+        pillText, pillColor = "พร้อมวาร์ป", Theme.Mint
+    end
+    WarpPill.Text = pillText
+    WarpPill.TextColor3 = pillColor:Lerp(WHITE, 0.3)
+    WarpPill.BackgroundColor3 = pillColor
+end
+refreshWarp()
+
+createSection(WarpPage, "คำสั่ง", Theme.Violet, 3)
+local WarpGrid = createGrid(WarpPage, 2, 104, 4)
+createActionCard(WarpGrid, {
+    name = "SetTpBtn",
+    icon = "+",
+    title = "ตั้งจุดวาร์ป",
+    desc = "บันทึกตำแหน่งที่ยืนอยู่ตอนนี้",
+    accent = Theme.Cyan,
+    order = 1,
+    callback = function()
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            savedPosition = char.HumanoidRootPart.CFrame
+            refreshWarp()
+            notify("ตั้งจุดวาร์ป", "บันทึกจุดวาร์ปแล้ว", Theme.Cyan, "+")
+            setStatus("บันทึกจุดวาร์ปแล้ว", Theme.Cyan)
+        end
+    end,
+})
+createActionCard(WarpGrid, {
+    name = "TpToggleBtn",
+    icon = "TP",
+    title = "วาร์ปไป-กลับ",
+    desc = "สลับระหว่างจุดวาร์ปกับที่เดิม",
+    accent = Theme.Violet,
+    order = 2,
+    callback = function()
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            return
+        end
+        if not savedPosition then
+            notify("วาร์ปไป-กลับ", "ต้องตั้งจุดวาร์ปก่อน", Theme.Crimson, "TP")
+            return
+        end
+        if not currentPositionBeforeTp then
+            currentPositionBeforeTp = hrp.CFrame
+            hrp.CFrame = savedPosition
+            notify("วาร์ปไป-กลับ", "วาร์ปไปจุดที่บันทึกแล้ว", Theme.Violet, "TP")
+            setStatus("อยู่ที่จุดวาร์ป", Theme.Violet)
+        else
+            hrp.CFrame = currentPositionBeforeTp
+            currentPositionBeforeTp = nil
+            notify("วาร์ปไป-กลับ", "กลับตำแหน่งเดิมแล้ว", Theme.Violet, "TP")
+            setStatus("กลับตำแหน่งเดิมแล้ว", Theme.Violet)
+        end
+        refreshWarp()
+    end,
+})
+createActionCard(WarpGrid, {
+    name = "MeteorWarpBtn",
+    icon = "M",
+    title = "วาปอุกกาบาต",
+    desc = "ไปยังตำแหน่งที่อุกกาบาตตก",
+    accent = Theme.Ember,
+    order = 3,
+    callback = function()
+        local character = LocalPlayer.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local meteorRemotes = ReplicatedStorage:FindFirstChild("MeteorRemotes")
+        local impactPos = meteorRemotes and meteorRemotes:FindFirstChild("ImpactPos")
+        if not rootPart then
+            notify("วาปอุกกาบาต", "ไม่พบตัวละครหรือ HumanoidRootPart", Theme.Crimson, "M")
+            setStatus("ไม่พบตัวละคร", Theme.Crimson)
+            return
+        end
+        if not impactPos or not impactPos:IsA("Vector3Value") then
+            notify("วาปอุกกาบาต", "ยังไม่มีพิกัดอุกกาบาต", Theme.Crimson, "M")
+            setStatus("ยังไม่มีพิกัดอุกกาบาต", Theme.Crimson)
+            return
+        end
+
+        local targetPos = impactPos.Value + Vector3.new(0, 10, 0)
+        rootPart.CFrame = CFrame.new(targetPos)
+        notify("วาปอุกกาบาต", "ย้ายไปยังจุดตกแล้ว", Theme.Ember, "M")
+        setStatus("วาปไปยังตำแหน่งอุกกาบาตแล้ว", Theme.Ember)
+    end,
+})
+
+local function studs(v) return string.format("%d สตั๊ด", math.floor(v + 0.5)) end
+
+-- ═════════════════════════ ระบบลัคกี้บล็อก (Tween ไปเก็บ Hacker ด่านสุดท้าย) ═════════════════════════
+-- บล็อกเกิดใน workspace.StageCards ชื่อ "Stage14_[Big |Massive ]Hacker Lucky Block" กดเก็บผ่าน PickUpPrompt (เซิร์ฟรับในระยะ 12 สตั๊ด)
+do
+    local HACKER_NAME = "Hacker Lucky Block"
+    local HACKER_COLOR = Theme.Mint
+    local SIZE_RANK = { Massive = 3, Big = 2 }
+    -- เกมย่อ/ขยายบล็อกให้ด้านยาวสุด = 5.25 x2 (ด่าน 8+) = 10.5 สตั๊ด • Big x1.5 = 15.75 • Massive x2 = 21
+    local BIG_MIN_EXTENT, MASSIVE_MIN_EXTENT = 13, 18.5
+    local SIZE_LABEL = { "ปกติ", "Big", "Massive" }
+    local busy = false
+
+    -- ขนาดจากชื่อ ("Stage14_Big ...") และจากขนาดจริงของโมเดล เอาค่าที่ใหญ่กว่า
+    local function blockRank(model)
+        local rank = SIZE_RANK[string.match(model.Name, "^Stage%d+_(%a+) ")] or 1
+        local ok, extents = pcall(model.GetExtentsSize, model)
+        if ok and extents then
+            local longest = math.max(extents.X, extents.Y, extents.Z)
+            if longest >= MASSIVE_MIN_EXTENT then
+                rank = math.max(rank, 3)
+            elseif longest >= BIG_MIN_EXTENT then
+                rank = math.max(rank, 2)
+            end
+        end
+        return rank
+    end
+
+    local function getRoot()
+        local char = LocalPlayer.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function promptPosition(prompt)
+        local holder = prompt.Parent
+        if holder:IsA("Attachment") then
+            return holder.WorldPosition
+        end
+        return holder:GetPivot().Position
+    end
+
+    local function findHackerBlocks()
+        local found = {}
+        local folder = workspace:FindFirstChild("StageCards")
+        if not folder then
+            return found
+        end
+        for _, model in ipairs(folder:GetChildren()) do
+            if model:IsA("Model") and string.find(model.Name, HACKER_NAME, 1, true) then
+                local prompt = model:FindFirstChild("PickUpPrompt", true)
+                -- บล็อกติวของคนอื่นเก็บไม่ได้
+                local tutorialOwner = model:GetAttribute("TutorialLuckyBlock") == true and tonumber(model:GetAttribute("TutorialOwnerUserId"))
+                if prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled and (not tutorialOwner or tutorialOwner == LocalPlayer.UserId) then
+                    table.insert(found, { model = model, prompt = prompt, rank = blockRank(model) })
+                end
+            end
+        end
+        return found
+    end
+
+    -- กรองเฉพาะขนาดที่เลือกไว้ (HackerMinSize)
+    local function wantedBlocks(blocks)
+        local minRank = getgenv().HackerMinSize or 1
+        local out = {}
+        for _, block in ipairs(blocks) do
+            if block.rank >= minRank then
+                table.insert(out, block)
+            end
+        end
+        return out
+    end
+
+    -- เลือกก้อนใหญ่สุดก่อน (Massive > Big > ปกติ) แล้วค่อยดูว่าใกล้สุด
+    local function pickBest(blocks, origin)
+        local best, bestDist
+        for _, block in ipairs(blocks) do
+            local dist = (promptPosition(block.prompt) - origin).Magnitude
+            if not best or block.rank > best.rank or (block.rank == best.rank and dist < bestDist) then
+                best, bestDist = block, dist
+            end
+        end
+        return best, bestDist
+    end
+
+    local function getOwnPlot()
+        local plots = workspace:FindFirstChild("Plots")
+        if not plots then
+            return nil
+        end
+        for _, plot in ipairs(plots:GetChildren()) do
+            if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                return plot
+            end
+        end
+        return nil
+    end
+
+    local function homePosition()
+        local plot = getOwnPlot()
+        if not plot then
+            return nil
+        end
+        local spawnPart = plot:FindFirstChild("Spawn")
+        if spawnPart and spawnPart:IsA("BasePart") then
+            return spawnPart.Position + Vector3.new(0, spawnPart.Size.Y / 2 + 3, 0)
+        end
+        local base = plot:FindFirstChild("Base", true)
+        if base and base:IsA("BasePart") then
+            return base.Position + Vector3.new(0, base.Size.Y / 2 + 4, 0)
+        end
+        return plot:GetPivot().Position + Vector3.new(0, 5, 0)
+    end
+
+    -- ลัคกี้บล็อกที่วางบนแท่นในบ้าน: plot.Items[เลขแท่น] ที่มี LuckyBlock = true
+    -- เปิดได้เมื่อถึงเวลา LuckyBlockOpenAt (เวลาเซิร์ฟ) • แท่น 1-10 อยู่ใน Podiums, 11+ อยู่ใน Upgrades
+    local function placedLuckyBlocks(plot)
+        local list = {}
+        local items = plot:FindFirstChild("Items")
+        if not items then
+            return list
+        end
+        local now = workspace:GetServerTimeNow()
+        for _, item in ipairs(items:GetChildren()) do
+            local number = tonumber(item.Name)
+            if number and item:GetAttribute("LuckyBlock") == true then
+                local podium
+                for _, folderName in ipairs({ number > 10 and "Upgrades" or "Podiums", "Podiums", "Upgrades" }) do
+                    local folder = plot:FindFirstChild(folderName)
+                    podium = folder and folder:FindFirstChild(item.Name)
+                    if podium then
+                        break
+                    end
+                end
+                local promptPart = podium and podium:FindFirstChild("Prompt")
+                local openAt = tonumber(item:GetAttribute("LuckyBlockOpenAt"))
+                table.insert(list, {
+                    number = number,
+                    promptPart = promptPart and promptPart:IsA("BasePart") and promptPart or nil,
+                    remaining = openAt and math.max(0, math.ceil(openAt - now)) or nil,
+                })
+            end
+        end
+        table.sort(list, function(a, b)
+            return a.number < b.number
+        end)
+        return list
+    end
+
+    -- Tween ตัวละครแบบทะลุกำแพง ความเร็วคงที่ตาม LuckyTweenSpeed (สตั๊ด/วินาที)
+    -- โหมดวาป (LuckyInstantWarp) = ย้ายทันที แล้วรอให้ตำแหน่งส่งถึงเซิร์ฟก่อนกดเก็บ
+    local function tweenTo(targetPos, shouldContinue)
+        local root = getRoot()
+        if not root then
+            return false
+        end
+        if getgenv().LuckyInstantWarp then
+            if not alive() or (shouldContinue and not shouldContinue()) then
+                return false
+            end
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.CFrame = CFrame.new(targetPos) * root.CFrame.Rotation
+            task.wait(0.15)
+            return root.Parent ~= nil
+        end
+        local char = root.Parent
+        local speed = math.max(getgenv().LuckyTweenSpeed or 350, 10)
+        local duration = math.max((targetPos - root.Position).Magnitude / speed, 0.05)
+        local noclip = RunService.Stepped:Connect(function()
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+            root.AssemblyLinearVelocity = Vector3.zero
+        end)
+        local tw = TweenService:Create(root, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+            CFrame = CFrame.new(targetPos) * root.CFrame.Rotation,
+        })
+        tw:Play()
+        while tw.PlaybackState == Enum.PlaybackState.Playing do
+            if not alive() or not root.Parent or (shouldContinue and not shouldContinue()) then
+                tw:Cancel()
+                break
+            end
+            task.wait()
+        end
+        noclip:Disconnect()
+        if root.Parent then
+            root.AssemblyLinearVelocity = Vector3.zero
+        end
+        return tw.PlaybackState == Enum.PlaybackState.Completed
+    end
+
+    local function triggerPrompt(prompt)
+        if fireproximityprompt then
+            pcall(fireproximityprompt, prompt)
+        else
+            prompt:InputHoldBegin()
+            task.wait(prompt.HoldDuration + 0.1)
+            prompt:InputHoldEnd()
+        end
+    end
+
+    local function goHome()
+        local home = homePosition()
+        if not home then
+            return false
+        end
+        return tweenTo(home)
+    end
+
+    -- คืนผล: "ok" | "none" | "noChar" | "cancel" | "taken" | "failed"
+    local function collectOnce(shouldContinue)
+        local root = getRoot()
+        if not root then
+            return "noChar"
+        end
+        local target = pickBest(wantedBlocks(findHackerBlocks()), root.Position)
+        if not target then
+            return "none"
+        end
+        setStatus("กำลังบินไปเก็บ Hacker [" .. SIZE_LABEL[target.rank] .. "]", HACKER_COLOR)
+        if not tweenTo(promptPosition(target.prompt) + Vector3.new(0, 2, 0), shouldContinue) then
+            return "cancel"
+        end
+        if not target.model.Parent then
+            return "taken"
+        end
+        triggerPrompt(target.prompt)
+        -- รอเซิร์ฟยืนยัน: บล็อกหายจาก StageCards หรือปุ่มเก็บถูกปิด
+        local deadline = os.clock() + 2
+        local function stillThere()
+            return target.model.Parent ~= nil and target.prompt.Parent ~= nil and target.prompt.Enabled
+        end
+        while os.clock() < deadline and stillThere() do
+            task.wait(0.1)
+        end
+        if stillThere() then
+            return "failed"
+        end
+        if getgenv().HackerReturnHome then
+            goHome()
+        end
+        return "ok"
+    end
+
+    local RESULT_TEXT = {
+        none = "ยังไม่มี Hacker ขนาดที่เลือกในแมพ",
+        noChar = "ไม่พบตัวละคร",
+        cancel = "ยกเลิกการบินแล้ว",
+        taken = "มีคนเก็บไปก่อนแล้ว",
+        failed = "เก็บไม่สำเร็จ • เซิร์ฟไม่ตอบรับ",
+        ok = "เก็บ Hacker Lucky Block แล้ว",
+        home = "กลับถึงฐานแล้ว",
+    }
+
+    -- ═════════════════════════ หน้า: ลัคกี้บล็อก ═════════════════════════
+    local LuckyPage = createPage("Lucky", HACKER_COLOR)
+    createPageHeader(LuckyPage, "ลัคกี้บล็อก", "บินไปเก็บ Hacker Lucky Block ด่านสุดท้าย แล้วพากลับฐาน", HACKER_COLOR)
+    createSection(LuckyPage, "Hacker Lucky Block  •  ด่าน 14", HACKER_COLOR, 1)
+
+    local LuckyInfo = create("Frame", {
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 68),
+        LayoutOrder = 2,
+        Parent = LuckyPage,
+    })
+    corner(LuckyInfo, 12)
+    gradient(LuckyInfo, { Theme.Card:Lerp(HACKER_COLOR, 0.12), Theme.Card }, 0)
+    stroke(LuckyInfo, HACKER_COLOR, 1, 0.55)
+    local luckyChip = iconChip(LuckyInfo, "14", HACKER_COLOR, 42)
+    luckyChip.Position = UDim2.fromOffset(12, 13)
+    text(LuckyInfo, {
+        Position = UDim2.fromOffset(64, 14),
+        Size = UDim2.new(1, -180, 0, 18),
+        Text = "Hacker ในแมพ",
+        TextSize = 13,
+    })
+    local LuckyDetail = text(LuckyInfo, {
+        Position = UDim2.fromOffset(64, 34),
+        Size = UDim2.new(1, -76, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local LuckyPill = text(LuckyInfo, {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 12),
+        Size = UDim2.fromOffset(0, 20),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 0.8,
+        BackgroundColor3 = Theme.Off,
+        Font = Enum.Font.GothamBlack,
+        Text = "",
+        TextSize = 9,
+    })
+    round(LuckyPill)
+    create("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = LuckyPill })
+
+    local function refreshLuckyInfo()
+        local all = findHackerBlocks()
+        local blocks = wantedBlocks(all)
+        local root = getRoot()
+        local best, dist
+        if root then
+            best, dist = pickBest(blocks, root.Position)
+        end
+        if best then
+            LuckyDetail.Text = string.format("ตรงเงื่อนไข %d / %d ก้อน   •   เป้าหมาย [%s] ห่าง %s", #blocks, #all, SIZE_LABEL[best.rank], studs(dist))
+        elseif #all > 0 then
+            LuckyDetail.Text = string.format("มี %d ก้อน แต่เป็นก้อนเล็ก — ข้าม รอก้อนใหญ่", #all)
+        else
+            LuckyDetail.Text = "ยังไม่เกิด — รอสักครู่ (เกิดใหม่ทุก ~8 วินาที)"
+        end
+        local pillColor = (busy and Theme.Gold) or (#blocks > 0 and HACKER_COLOR) or Theme.Muted
+        LuckyPill.Text = busy and "กำลังเก็บ" or (#blocks > 0 and ("พบ " .. #blocks) or "ไม่พบ")
+        LuckyPill.TextColor3 = pillColor:Lerp(WHITE, 0.3)
+        LuckyPill.BackgroundColor3 = pillColor
+    end
+    -- ─────────── ตัวเลือกขนาดที่จะเก็บ ───────────
+    local SIZE_OPTIONS = {
+        { rank = 1, label = "ทุกขนาด" },
+        { rank = 2, label = "Big ขึ้นไป" },
+        { rank = 3, label = "Massive เท่านั้น" },
+    }
+    local SizeCard = create("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 86),
+        LayoutOrder = 3,
+        Parent = LuckyPage,
+    })
+    corner(SizeCard, 12)
+    stroke(SizeCard, Theme.Stroke, 1, 0.35)
+    text(SizeCard, {
+        Position = UDim2.fromOffset(14, 9),
+        Size = UDim2.new(1, -28, 0, 18),
+        Text = "ขนาดที่จะเก็บ",
+        TextSize = 13,
+    })
+    text(SizeCard, {
+        Position = UDim2.fromOffset(14, 27),
+        Size = UDim2.new(1, -28, 0, 14),
+        Font = Enum.Font.Gotham,
+        Text = "ก้อนใหญ่ได้ luck มากกว่า • Big x2  •  Massive x4",
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local sizeHolder = create("Frame", {
+        Position = UDim2.fromOffset(14, 48),
+        Size = UDim2.new(1, -28, 0, 28),
+        BackgroundTransparency = 1,
+        Parent = SizeCard,
+    })
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+        Parent = sizeHolder,
+    })
+    local sizeButtons = {}
+    local function renderSizeButtons()
+        local current = getgenv().HackerMinSize or 1
+        for _, entry in ipairs(sizeButtons) do
+            local on = entry.rank == current
+            tween(entry.button, 0.2, {
+                BackgroundColor3 = on and HACKER_COLOR or Theme.Off,
+                TextColor3 = on and Theme.Bg or Theme.SubText,
+            })
+            entry.stroke.Transparency = on and 0 or 0.6
+        end
+    end
+    for i, option in ipairs(SIZE_OPTIONS) do
+        local button = create("TextButton", {
+            AutoButtonColor = false,
+            BackgroundColor3 = Theme.Off,
+            Size = UDim2.new(1 / #SIZE_OPTIONS, -4, 1, 0),
+            Font = Enum.Font.GothamBold,
+            Text = option.label,
+            TextColor3 = Theme.SubText,
+            TextSize = 11,
+            LayoutOrder = i,
+            Parent = sizeHolder,
+        })
+        corner(button, 8)
+        local buttonStroke = stroke(button, HACKER_COLOR:Lerp(WHITE, 0.3), 1, 0.6)
+        button.MouseButton1Click:Connect(function()
+            getgenv().HackerMinSize = option.rank
+            renderSizeButtons()
+            pcall(refreshLuckyInfo)
+            notify("ขนาดที่จะเก็บ", option.label, HACKER_COLOR, "LB")
+            setStatus("เก็บ Hacker: " .. option.label, HACKER_COLOR)
+        end)
+        table.insert(sizeButtons, { rank = option.rank, button = button, stroke = buttonStroke })
+    end
+    renderSizeButtons()
+    refreshLuckyInfo()
+
+    createSection(LuckyPage, "ระบบอัตโนมัติ", HACKER_COLOR, 4)
+    createToggle(LuckyPage, {
+        name = "AutoHackerBtn",
+        icon = "LB",
+        title = "เก็บ Hacker อัตโนมัติ",
+        desc = "Tween ไปเก็บทุกก้อนที่ตรงขนาด วนต่อเนื่อง",
+        accent = HACKER_COLOR,
+        order = 5,
+        onToggle = function(on)
+            getgenv().AutoHackerActive = on
+            refreshLive()
+            notify("เก็บ Hacker อัตโนมัติ", on and "เปิดแล้ว — กำลังหาบล็อก" or "ปิดใช้งานแล้ว", HACKER_COLOR, "LB")
+            setStatus(on and "กำลังหา Hacker Lucky Block" or "หยุดเก็บ Hacker อัตโนมัติ", on and HACKER_COLOR or Theme.Muted)
+        end,
+    })
+    local returnToggle = createToggle(LuckyPage, {
+        name = "HackerReturnBtn",
+        icon = "H",
+        title = "กลับฐานหลังเก็บ",
+        desc = "เก็บเสร็จแล้ว Tween กลับ plot ของตัวเอง",
+        accent = Theme.Cyan,
+        order = 6,
+        onToggle = function(on)
+            getgenv().HackerReturnHome = on
+        end,
+    })
+    returnToggle:Set(getgenv().HackerReturnHome, true)
+    local warpToggle = createToggle(LuckyPage, {
+        name = "HackerWarpBtn",
+        icon = "TP",
+        title = "โหมดวาปไปเลย",
+        desc = "วาร์ปทันทีแทนการบิน • ไวสุด แต่เสี่ยงโดนเตะกว่า",
+        accent = Theme.Violet,
+        order = 7,
+        onToggle = function(on)
+            getgenv().LuckyInstantWarp = on
+            notify("โหมดวาปไปเลย", on and "เปิดแล้ว — วาร์ปทันทีไม่ต้องบิน" or "ปิดแล้ว — กลับไปใช้การบิน", Theme.Violet, "TP")
+            setStatus(on and "โหมดวาป: วาร์ปทันที" or "โหมดบิน: Tween ตามความไว", on and Theme.Violet or Theme.Muted)
+        end,
+    })
+    warpToggle:Set(getgenv().LuckyInstantWarp, true)
+    createSlider(LuckyPage, {
+        title = "ความไวในการบิน",
+        desc = "สตั๊ด/วินาที • ใช้ตอนปิดโหมดวาป (ไวเกินอาจโดนเตะ)",
+        min = 50,
+        max = 1500,
+        step = 10,
+        decimals = 0,
+        default = getgenv().LuckyTweenSpeed,
+        accent = HACKER_COLOR,
+        order = 8,
+        onChange = function(v)
+            getgenv().LuckyTweenSpeed = v
+        end,
+    })
+
+    createSection(LuckyPage, "คำสั่ง", Theme.Violet, 9)
+    local LuckyGrid = createGrid(LuckyPage, 2, 104, 10)
+
+    local function runManual(title, icon, job)
+        if busy then
+            notify(title, "กำลังเก็บอยู่ รอให้เสร็จก่อนนะ", Theme.Crimson, icon)
+            return
+        end
+        busy = true
+        task.spawn(function()
+            local ok, result, good = pcall(job)
+            busy = false
+            if not ok then
+                warn("[JERDDXIAO] " .. tostring(result))
+                result, good = "failed", false
+            end
+            good = good or result == "ok" or result == "home"
+            notify(title, RESULT_TEXT[result] or tostring(result), good and HACKER_COLOR or Theme.Crimson, icon)
+            setStatus(RESULT_TEXT[result] or tostring(result), good and HACKER_COLOR or Theme.Crimson)
+        end)
+    end
+
+    createActionCard(LuckyGrid, {
+        name = "HackerOnceBtn",
+        icon = "LB",
+        title = "เก็บ 1 ครั้ง",
+        desc = "บินไปเก็บก้อนใหญ่สุดที่ตรงขนาด",
+        accent = HACKER_COLOR,
+        order = 1,
+        callback = function()
+            runManual("เก็บ 1 ครั้ง", "LB", collectOnce)
+        end,
+    })
+    createActionCard(LuckyGrid, {
+        name = "HackerHomeBtn",
+        icon = "H",
+        title = "กลับฐาน",
+        desc = "Tween กลับ plot ของตัวเอง",
+        accent = Theme.Cyan,
+        order = 2,
+        callback = function()
+            runManual("กลับฐาน", "H", function()
+                if not getRoot() then
+                    return "noChar"
+                end
+                if not homePosition() then
+                    return "ไม่พบ plot ของคุณ"
+                end
+                return goHome() and "home" or "cancel"
+            end)
+        end,
+    })
+
+    -- เปิดลัคกี้บล็อกในบ้านทุกก้อนที่พร้อม: ไปยืนที่แท่น (เซิร์ฟเช็คระยะ) แล้วเรียก F:OpenLuckyBlock(เลขแท่น)
+    local OPEN_ERRORS = { "เกิดข้อผิดพลาด", "ต้องถือไอเทมก่อน", "ไม่มีไอเทมนี้", "rebirth ไม่พอ", "กดเร็วเกินไป", "ยังไม่ถึงเวลาเปิด", "อยู่ไกลแท่นเกินไป" }
+    local function openAllBlocks()
+        local plot = getOwnPlot()
+        if not plot then
+            return "ไม่พบ plot ของคุณ"
+        end
+        local shared = ReplicatedStorage:FindFirstChild("Shared")
+        local utils = shared and shared:FindFirstChild("Utils")
+        local network = utils and utils:FindFirstChild("Network")
+        local remote = network and network:FindFirstChild("F:OpenLuckyBlock")
+        if not remote then
+            return "ไม่พบรีโมต OpenLuckyBlock ในเกม"
+        end
+        local blocks = placedLuckyBlocks(plot)
+        if #blocks == 0 then
+            return "ไม่มีลัคกี้บล็อกวางอยู่ในบ้าน"
+        end
+        -- เกมจะเปิดบล็อกเฉพาะตอนมือว่าง (ถือของอยู่ = สลับของแทน)
+        local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:UnequipTools()
+        end
+        local opened, failed, notReady, soonest = 0, 0, 0, nil
+        local lastError = nil
+        for _, block in ipairs(blocks) do
+            if not alive() then
+                break
+            end
+            if block.remaining == nil or block.remaining > 0 then
+                notReady = notReady + 1
+                if block.remaining then
+                    soonest = math.min(soonest or math.huge, block.remaining)
+                end
+            elseif block.promptPart then
+                setStatus("กำลังเปิดบล็อกแท่น " .. block.number, Theme.Gold)
+                tweenTo(block.promptPart.Position + Vector3.new(0, 3, 0))
+                local ok, success, code = pcall(remote.InvokeServer, remote, tostring(block.number))
+                if ok and success then
+                    opened = opened + 1
+                else
+                    failed = failed + 1
+                    lastError = ok and (OPEN_ERRORS[tonumber(code)] or "เกิดข้อผิดพลาด") or "เรียกเซิร์ฟไม่สำเร็จ"
+                end
+                task.wait(0.35)
+            else
+                failed = failed + 1
+            end
+        end
+        local parts = { "เปิดแล้ว " .. opened .. " ก้อน" }
+        if notReady > 0 then
+            table.insert(parts, "ยังไม่พร้อม " .. notReady .. (soonest and (" (อีก " .. soonest .. " วิ)") or ""))
+        end
+        if failed > 0 then
+            table.insert(parts, "พลาด " .. failed .. (lastError and (" • " .. lastError) or ""))
+        end
+        return table.concat(parts, "  •  "), opened > 0
+    end
+
+    createActionCard(LuckyGrid, {
+        name = "OpenAllBlocksBtn",
+        icon = "OP",
+        title = "เปิดบล็อกทั้งหมด",
+        desc = "เปิดลัคกี้บล็อกในบ้านทุกก้อนที่พร้อม",
+        accent = Theme.Gold,
+        order = 3,
+        callback = function()
+            runManual("เปิดบล็อกทั้งหมด", "OP", openAllBlocks)
+        end,
+    })
+
+    -- ลูปเก็บอัตโนมัติ
+    task.spawn(function()
+        local lastResult = nil
+        while alive() and ScreenGui.Parent do
+            if getgenv().AutoHackerActive and not busy then
+                busy = true
+                local ok, result = pcall(collectOnce, function()
+                    return getgenv().AutoHackerActive == true
+                end)
+                busy = false
+                if not ok then
+                    warn("[JERDDXIAO] " .. tostring(result))
+                    result = "failed"
+                end
+                if result == "ok" then
+                    notify("เก็บ Hacker อัตโนมัติ", RESULT_TEXT.ok, HACKER_COLOR, "LB")
+                end
+                if result ~= lastResult or result == "ok" then
+                    setStatus(result == "none" and "รอ Hacker Lucky Block เกิด..." or RESULT_TEXT[result], result == "ok" and HACKER_COLOR or Theme.Muted)
+                end
+                lastResult = result
+                task.wait(result == "none" and 0.5 or 0.2)
+            else
+                lastResult = nil
+                task.wait(0.3)
+            end
+        end
+    end)
+
+    -- อัปเดตการ์ดจำนวนบล็อก
+    task.spawn(function()
+        while alive() and ScreenGui.Parent do
+            task.wait(0.5)
+            pcall(refreshLuckyInfo)
+        end
+    end)
+end
+
+-- ═════════════════════════ ระบบอัปเกรดแท่นใน plot อัตโนมัติ ═════════════════════════
+-- แท่นอยู่ใน plot.Podiums (1-10) และ plot.Upgrades (11+) แต่ละแท่นมี NewLevelUp ที่เก็บ Cost / Level (Cost < 0 = ตันแล้ว)
+-- อัปเกรดผ่าน Network["F:UpgradeFish"]:InvokeServer(ชื่อแท่น, "single") → (สำเร็จ, รหัสข้อผิดพลาด)
+do
+    local UP_COLOR = Theme.Gold
+    local UPGRADE_DELAY = 0.3 -- เกมกันกดรัวไว้ 0.25 วิ
+    local UPGRADE_ERRORS = { "เกิดข้อผิดพลาด", "แท่นนี้ยังไม่ได้วางตัว", "เลเวลตันแล้ว", "เงินไม่พอ" }
+    local NOT_ENOUGH_MONEY = 4
+    local SUFFIXES = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
+    local busy = false
+    local upgradeState = "off"
+    local upgradesDone, moneySpent = 0, 0
+    local upgradeRemote = nil
+
+    local function money(n)
+        if n < 1000 then
+            return "$" .. math.floor(n)
+        end
+        local tier = math.min(math.floor(math.log10(n) / 3), #SUFFIXES - 1)
+        return string.format("$%.2f%s", n / 10 ^ (tier * 3), SUFFIXES[tier + 1])
+    end
+
+    local function getRemote()
+        if upgradeRemote and upgradeRemote.Parent then
+            return upgradeRemote
+        end
+        local shared = ReplicatedStorage:FindFirstChild("Shared")
+        local utils = shared and shared:FindFirstChild("Utils")
+        local network = utils and utils:FindFirstChild("Network")
+        upgradeRemote = network and network:FindFirstChild("F:UpgradeFish")
+        return upgradeRemote
+    end
+
+    local function getOwnPlot()
+        local plots = workspace:FindFirstChild("Plots")
+        if not plots then
+            return nil
+        end
+        for _, plot in ipairs(plots:GetChildren()) do
+            if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                return plot
+            end
+        end
+        return nil
+    end
+
+    local function listPodiums(plot)
+        local list = {}
+        local items = plot:FindFirstChild("Items")
+        for _, folderName in ipairs({ "Podiums", "Upgrades" }) do
+            local folder = plot:FindFirstChild(folderName)
+            if folder then
+                for _, podium in ipairs(folder:GetChildren()) do
+                    local pad = podium:FindFirstChild("NewLevelUp")
+                    local cost = pad and tonumber(pad:GetAttribute("Cost"))
+                    if tonumber(podium.Name) and cost then
+                        table.insert(list, {
+                            podium = podium,
+                            pad = pad,
+                            cost = cost,
+                            level = math.max(1, math.floor(tonumber(pad:GetAttribute("Level")) or 1)),
+                            item = items and items:FindFirstChild(podium.Name),
+                        })
+                    end
+                end
+            end
+        end
+        return list
+    end
+
+    -- แท่นที่มีตัววางอยู่และยังไม่ตัน เรียงตามโหมด (UpgradeMode)
+    --   balance = เลเวลต่ำสุดก่อน (ถ้าเท่ากันเอาตัวถูกกว่า) → ทุกตัวขึ้นพร้อมๆ กัน
+    --   cheap   = ถูกสุดก่อน
+    --   random  = สุ่มลำดับ
+    local function upgradable(list)
+        local out = {}
+        for _, entry in ipairs(list) do
+            if entry.item and entry.cost >= 0 then
+                table.insert(out, entry)
+            end
+        end
+        local mode = getgenv().UpgradeMode
+        if mode == "random" then
+            for i = #out, 2, -1 do
+                local j = math.random(i)
+                out[i], out[j] = out[j], out[i]
+            end
+        elseif mode == "cheap" then
+            table.sort(out, function(a, b)
+                return a.cost < b.cost
+            end)
+        else
+            table.sort(out, function(a, b)
+                if a.level ~= b.level then
+                    return a.level < b.level
+                end
+                return a.cost < b.cost
+            end)
+        end
+        return out
+    end
+
+    local function podiumLabel(entry)
+        local name = entry.item and entry.item:GetAttribute("CardItemName")
+        return "แท่น " .. entry.podium.Name .. (type(name) == "string" and (" • " .. name) or "")
+    end
+
+    local function cashText()
+        local stats = LocalPlayer:FindFirstChild("leaderstats")
+        local cash = stats and stats:FindFirstChild("Cash")
+        return cash and tostring(cash.Value) or "--"
+    end
+
+    -- ═════════════════════════ หน้า: อัปเกรด ═════════════════════════
+    local UpgradePage = createPage("Upgrade", UP_COLOR)
+    createPageHeader(UpgradePage, "อัปเกรด", "อัปเลเวลตัวบนแท่นใน plot อัตโนมัติ เลือกได้ว่าจะอัปแบบไหน", UP_COLOR)
+    createSection(UpgradePage, "สถานะ", UP_COLOR, 1)
+
+    local UpInfo = create("Frame", {
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 68),
+        LayoutOrder = 2,
+        Parent = UpgradePage,
+    })
+    corner(UpInfo, 12)
+    gradient(UpInfo, { Theme.Card:Lerp(UP_COLOR, 0.12), Theme.Card }, 0)
+    stroke(UpInfo, UP_COLOR, 1, 0.55)
+    local upChip = iconChip(UpInfo, "UP", UP_COLOR, 42)
+    upChip.Position = UDim2.fromOffset(12, 13)
+    local UpTitle = text(UpInfo, {
+        Position = UDim2.fromOffset(64, 14),
+        Size = UDim2.new(1, -180, 0, 18),
+        Text = "",
+        TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local UpDetail = text(UpInfo, {
+        Position = UDim2.fromOffset(64, 34),
+        Size = UDim2.new(1, -76, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local UpPill = text(UpInfo, {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 12),
+        Size = UDim2.fromOffset(0, 20),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 0.8,
+        BackgroundColor3 = Theme.Off,
+        Font = Enum.Font.GothamBlack,
+        Text = "",
+        TextSize = 9,
+    })
+    round(UpPill)
+    create("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = UpPill })
+
+    local PILL = {
+        off = { "ปิดอยู่", Theme.Muted },
+        running = { "กำลังอัป", UP_COLOR },
+        waitMoney = { "รอเงิน", Theme.Ember },
+        maxed = { "ตันหมดแล้ว", Theme.Mint },
+        empty = { "ไม่มีตัวบนแท่น", Theme.Muted },
+        noPlot = { "ไม่พบ plot", Theme.Crimson },
+    }
+
+    local function refreshUpInfo()
+        UpTitle.Text = "เงินตอนนี้  " .. cashText()
+        local plot = getOwnPlot()
+        if not plot then
+            UpDetail.Text = "ยังหา plot ของคุณไม่เจอ"
+        else
+            local list = listPodiums(plot)
+            local placed, maxed = 0, 0
+            for _, entry in ipairs(list) do
+                if entry.item then
+                    placed = placed + 1
+                    if entry.cost < 0 then
+                        maxed = maxed + 1
+                    end
+                end
+            end
+            local candidates = upgradable(list)
+            local nextUp = candidates[1]
+            local nextText
+            if not nextUp then
+                nextText = "ไม่มีให้อัป"
+            elseif getgenv().UpgradeMode == "random" then
+                nextText = "สุ่มจาก " .. #candidates .. " แท่น"
+            else
+                nextText = "ถัดไป แท่น " .. nextUp.podium.Name .. " Lvl " .. nextUp.level .. " " .. money(nextUp.cost)
+            end
+            UpDetail.Text = string.format("วางอยู่ %d แท่น   •   ตัน %d   •   %s", placed, maxed, nextText)
+        end
+        local pill = PILL[getgenv().AutoUpgradeActive and upgradeState or "off"] or PILL.off
+        UpPill.Text = pill[1]
+        UpPill.TextColor3 = pill[2]:Lerp(WHITE, 0.3)
+        UpPill.BackgroundColor3 = pill[2]
+    end
+
+    createSection(UpgradePage, "ระบบอัตโนมัติ", UP_COLOR, 3)
+    createToggle(UpgradePage, {
+        name = "AutoUpgradeBtn",
+        icon = "UP",
+        title = "อัปเกรดอัตโนมัติ",
+        desc = "อัปตามโหมดที่เลือก วนจนเงินหมดหรือตันทุกตัว",
+        accent = UP_COLOR,
+        order = 4,
+        onToggle = function(on)
+            getgenv().AutoUpgradeActive = on
+            upgradeState = on and "running" or "off"
+            refreshLive()
+            pcall(refreshUpInfo)
+            notify("อัปเกรดอัตโนมัติ", on and "เปิดแล้ว — เริ่มอัปตามโหมดที่เลือก" or "ปิดใช้งานแล้ว", UP_COLOR, "UP")
+            setStatus(on and "กำลังอัปเกรดแท่นอัตโนมัติ" or "หยุดอัปเกรดอัตโนมัติ", on and UP_COLOR or Theme.Muted)
+        end,
+    })
+
+    -- ─────────── ตัวเลือกโหมดการอัป ───────────
+    local MODE_OPTIONS = {
+        { id = "balance", label = "เกลี่ยเท่ากัน", hint = "อัปตัวที่เลเวลต่ำสุดก่อน ทุกตัวขึ้นไปพร้อมๆ กัน" },
+        { id = "cheap", label = "ถูกสุดก่อน", hint = "อัปตัวที่ราคาถูกสุดก่อน ได้จำนวนครั้งเยอะสุด" },
+        { id = "random", label = "สุ่ม", hint = "สุ่มแท่นทุกครั้ง คละกันไปเรื่อยๆ" },
+    }
+    local ModeCard = create("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 86),
+        LayoutOrder = 5,
+        Parent = UpgradePage,
+    })
+    corner(ModeCard, 12)
+    stroke(ModeCard, Theme.Stroke, 1, 0.35)
+    text(ModeCard, {
+        Position = UDim2.fromOffset(14, 9),
+        Size = UDim2.new(1, -28, 0, 18),
+        Text = "โหมดการอัป",
+        TextSize = 13,
+    })
+    local ModeHint = text(ModeCard, {
+        Position = UDim2.fromOffset(14, 27),
+        Size = UDim2.new(1, -28, 0, 14),
+        Font = Enum.Font.Gotham,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 10,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local modeHolder = create("Frame", {
+        Position = UDim2.fromOffset(14, 48),
+        Size = UDim2.new(1, -28, 0, 28),
+        BackgroundTransparency = 1,
+        Parent = ModeCard,
+    })
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+        Parent = modeHolder,
+    })
+    local modeButtons = {}
+    local function renderModeButtons()
+        local current = getgenv().UpgradeMode
+        for _, entry in ipairs(modeButtons) do
+            local on = entry.option.id == current
+            tween(entry.button, 0.2, {
+                BackgroundColor3 = on and UP_COLOR or Theme.Off,
+                TextColor3 = on and Theme.Bg or Theme.SubText,
+            })
+            entry.stroke.Transparency = on and 0 or 0.6
+            if on then
+                ModeHint.Text = entry.option.hint
+            end
+        end
+    end
+    for i, option in ipairs(MODE_OPTIONS) do
+        local button = create("TextButton", {
+            AutoButtonColor = false,
+            BackgroundColor3 = Theme.Off,
+            Size = UDim2.new(1 / #MODE_OPTIONS, -4, 1, 0),
+            Font = Enum.Font.GothamBold,
+            Text = option.label,
+            TextColor3 = Theme.SubText,
+            TextSize = 11,
+            LayoutOrder = i,
+            Parent = modeHolder,
+        })
+        corner(button, 8)
+        local buttonStroke = stroke(button, UP_COLOR:Lerp(WHITE, 0.3), 1, 0.6)
+        button.MouseButton1Click:Connect(function()
+            getgenv().UpgradeMode = option.id
+            renderModeButtons()
+            pcall(refreshUpInfo)
+            notify("โหมดการอัป", option.label, UP_COLOR, "UP")
+            setStatus("โหมดอัปเกรด: " .. option.label, UP_COLOR)
+        end)
+        table.insert(modeButtons, { option = option, button = button, stroke = buttonStroke })
+    end
+    renderModeButtons()
+
+    -- ─────────── บันทึก (Log) ───────────
+    local LOG_MAX = 8
+    local LOG_ROW_H = 16
+    local logEntries = {}
+    createSection(UpgradePage, "บันทึก (Log)", Theme.Violet, 6)
+    local LogCard = create("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 40 + LOG_MAX * LOG_ROW_H),
+        LayoutOrder = 7,
+        Parent = UpgradePage,
+    })
+    corner(LogCard, 12)
+    stroke(LogCard, Theme.Stroke, 1, 0.35)
+    local LogStats = text(LogCard, {
+        Position = UDim2.fromOffset(14, 8),
+        Size = UDim2.new(1, -28, 0, 18),
+        Text = "",
+        TextSize = 12,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    create("Frame", {
+        Position = UDim2.fromOffset(14, 30),
+        Size = UDim2.new(1, -28, 0, 1),
+        BackgroundColor3 = Theme.Stroke,
+        BackgroundTransparency = 0.4,
+        BorderSizePixel = 0,
+        Parent = LogCard,
+    })
+    local logRows = {}
+    for i = 1, LOG_MAX do
+        local y = 34 + (i - 1) * LOG_ROW_H
+        logRows[i] = {
+            time = text(LogCard, {
+                Position = UDim2.fromOffset(14, y),
+                Size = UDim2.fromOffset(62, LOG_ROW_H),
+                Font = Enum.Font.Code,
+                Text = "",
+                TextColor3 = Theme.Muted,
+                TextSize = 11,
+            }),
+            message = text(LogCard, {
+                Position = UDim2.fromOffset(78, y),
+                Size = UDim2.new(1, -92, 0, LOG_ROW_H),
+                Font = Enum.Font.GothamMedium,
+                Text = "",
+                TextSize = 11,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+            }),
+        }
+    end
+
+    local function renderLog()
+        LogStats.Text = string.format("อัปไปแล้ว %d ครั้ง   •   ใช้เงินไป %s", upgradesDone, money(moneySpent))
+        for i, row in ipairs(logRows) do
+            local entry = logEntries[i]
+            row.time.Text = entry and entry.time or ""
+            row.message.Text = entry and entry.text or (i == 1 and "ยังไม่มีบันทึก — เปิดอัปเกรดอัตโนมัติเพื่อเริ่ม" or "")
+            row.message.TextColor3 = entry and entry.color or Theme.Muted
+        end
+    end
+
+    local function addLog(message, color)
+        table.insert(logEntries, 1, { time = os.date("%H:%M:%S"), text = message, color = color or Theme.SubText })
+        if #logEntries > LOG_MAX then
+            table.remove(logEntries)
+        end
+        renderLog()
+    end
+    renderLog()
+
+    -- อัป 1 เลเวล คืน (สำเร็จ, รหัสข้อผิดพลาด)
+    local function upgradeOne(entry)
+        local remote = getRemote()
+        if not remote then
+            addLog("ไม่พบรีโมต UpgradeFish ในเกม", Theme.Crimson)
+            return false, 1
+        end
+        local ok, success, code = pcall(remote.InvokeServer, remote, entry.podium.Name, "single")
+        if not ok then
+            warn("[JERDDXIAO] " .. tostring(success))
+            addLog(podiumLabel(entry) .. "  •  เรียกเซิร์ฟไม่สำเร็จ", Theme.Crimson)
+            return false, 1
+        end
+        if success then
+            upgradesDone = upgradesDone + 1
+            moneySpent = moneySpent + entry.cost
+            addLog(string.format("%s  Lvl %d → %d  (-%s)", podiumLabel(entry), entry.level, entry.level + 1, money(entry.cost)), UP_COLOR)
+            return true
+        end
+        code = tonumber(code) or 1
+        if code ~= NOT_ENOUGH_MONEY then
+            addLog(podiumLabel(entry) .. "  •  " .. (UPGRADE_ERRORS[code] or "เกิดข้อผิดพลาด"), Theme.Crimson)
+        end
+        return false, code
+    end
+
+    createSection(UpgradePage, "คำสั่ง", Theme.Violet, 8)
+    local UpGrid = createGrid(UpgradePage, 2, 104, 9)
+    createActionCard(UpGrid, {
+        name = "UpgradeRoundBtn",
+        icon = "+1",
+        title = "อัป 1 รอบ",
+        desc = "อัปทุกแท่นคนละ 1 เลเวล (เงินไม่พอข้าม)",
+        accent = UP_COLOR,
+        order = 1,
+        callback = function()
+            if busy then
+                notify("อัป 1 รอบ", "กำลังอัปอยู่ รอให้เสร็จก่อนนะ", Theme.Crimson, "+1")
+                return
+            end
+            local plot = getOwnPlot()
+            if not plot then
+                notify("อัป 1 รอบ", "ไม่พบ plot ของคุณ", Theme.Crimson, "+1")
+                return
+            end
+            busy = true
+            task.spawn(function()
+                local count, skipped = 0, 0
+                for _, entry in ipairs(upgradable(listPodiums(plot))) do
+                    local ok, code = upgradeOne(entry)
+                    if ok then
+                        count = count + 1
+                    elseif code == NOT_ENOUGH_MONEY then
+                        skipped = skipped + 1
+                    end
+                    task.wait(UPGRADE_DELAY)
+                end
+                if skipped > 0 then
+                    addLog("อัป 1 รอบ • เงินไม่พอ ข้ามไป " .. skipped .. " แท่น", Theme.Ember)
+                end
+                busy = false
+                notify("อัป 1 รอบ", count > 0 and ("อัปไป " .. count .. " แท่น") or "ไม่มีแท่นที่อัปได้", count > 0 and UP_COLOR or Theme.Muted, "+1")
+                setStatus("อัป 1 รอบเสร็จ • " .. count .. " แท่น", count > 0 and UP_COLOR or Theme.Muted)
+            end)
+        end,
+    })
+    createActionCard(UpGrid, {
+        name = "UpgradeClearLogBtn",
+        icon = "CL",
+        title = "ล้าง log",
+        desc = "ล้างบันทึกและรีเซ็ตตัวนับ",
+        accent = Theme.Violet,
+        order = 2,
+        callback = function()
+            logEntries = {}
+            upgradesDone, moneySpent = 0, 0
+            renderLog()
+        end,
+    })
+
+    -- ลูปอัปเกรดอัตโนมัติ
+    task.spawn(function()
+        local function enterState(state, message, color)
+            if upgradeState ~= state then
+                upgradeState = state
+                if message then
+                    addLog(message, color)
+                end
+                setStatus(message or "กำลังอัปเกรดแท่นอัตโนมัติ", color or UP_COLOR)
+            end
+        end
+        while alive() and ScreenGui.Parent do
+            if getgenv().AutoUpgradeActive and not busy then
+                busy = true
+                local pause = UPGRADE_DELAY
+                local ok, err = pcall(function()
+                    local plot = getOwnPlot()
+                    if not plot then
+                        enterState("noPlot", "ไม่พบ plot ของคุณ", Theme.Crimson)
+                        pause = 2
+                        return
+                    end
+                    local list = listPodiums(plot)
+                    local target = upgradable(list)[1]
+                    if not target then
+                        local anyPlaced = false
+                        for _, entry in ipairs(list) do
+                            anyPlaced = anyPlaced or entry.item ~= nil
+                        end
+                        if anyPlaced then
+                            enterState("maxed", "ทุกแท่นเลเวลตันแล้ว", Theme.Mint)
+                        else
+                            enterState("empty", "ยังไม่มีตัววางบนแท่น", Theme.Muted)
+                        end
+                        pause = 2
+                        return
+                    end
+                    local success, code = upgradeOne(target)
+                    if success then
+                        enterState("running")
+                    elseif code == NOT_ENOUGH_MONEY then
+                        enterState("waitMoney", "รอเงิน • ถัดไป " .. podiumLabel(target) .. " " .. money(target.cost), Theme.Ember)
+                        pause = 1.5
+                    else
+                        pause = 1
+                    end
+                end)
+                busy = false
+                if not ok then
+                    warn("[JERDDXIAO] " .. tostring(err))
+                    pause = 1
+                end
+                task.wait(pause)
+            else
+                task.wait(0.3)
+            end
+        end
+    end)
+
+    -- อัปเดตการ์ดสถานะ
+    task.spawn(function()
+        while alive() and ScreenGui.Parent do
+            pcall(refreshUpInfo)
+            task.wait(0.5)
+        end
+    end)
+end
+
+-- ═════════════════════════ ระบบผู้เล่น (ESP • สเปคจอ • วาร์ปหา) ═════════════════════════
+-- ห่อไว้ใน do...end เพื่อไม่ให้ตัวแปร local ระดับบนสุดเกินขีดจำกัด 200 ตัวของ Luau
+local updatePlayerTools, stopPlayerTools
+do
+    local selectedPlayer = nil
+    local playerRows = {}
+    local thumbCache = {}
+    local ESP_COLOR = Theme.Pink
+    local TARGET_COLOR = Theme.Gold
+    local hasDrawing = pcall(function()
+        Drawing.new("Line"):Remove()
+    end)
+
+    local function getRoot(player)
+        local char = player and player.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function getHumanoid(player)
+        local char = player and player.Character
+        return char and char:FindFirstChildOfClass("Humanoid")
+    end
+
+    local function distanceTo(player)
+        local myRoot, theirRoot = getRoot(LocalPlayer), getRoot(player)
+        if myRoot and theirRoot then
+            return (myRoot.Position - theirRoot.Position).Magnitude
+        end
+        return nil
+    end
+
+    -- รูปโปรไฟล์ผู้เล่นแบบวงกลม (โหลดเบื้องหลัง + แคชไว้ใช้ซ้ำ)
+    local function avatarBubble(parent, size)
+        local frame = create("Frame", {
+            Size = UDim2.fromOffset(size, size),
+            BackgroundColor3 = Color3.fromRGB(38, 31, 67),
+            Parent = parent,
+        })
+        round(frame)
+        local initial = text(frame, {
+            Size = UDim2.fromScale(1, 1),
+            Font = Enum.Font.GothamBlack,
+            Text = "?",
+            TextColor3 = Color3.fromRGB(255, 243, 196),
+            TextSize = math.floor(size * 0.45),
+            TextXAlignment = Enum.TextXAlignment.Center,
+        })
+        local image = create("ImageLabel", {
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            ImageTransparency = 1,
+            ScaleType = Enum.ScaleType.Crop,
+            ZIndex = 2,
+            Parent = frame,
+        })
+        round(image)
+        return { frame = frame, image = image, initial = initial, userId = nil }
+    end
+
+    local function showAvatar(avatar, player)
+        avatar.userId = player and player.UserId
+        avatar.image.ImageTransparency = 1
+        avatar.initial.Visible = true
+        avatar.initial.Text = player and string.sub(player.Name, 1, 1):upper() or "?"
+        if not player then
+            return
+        end
+        local userId = player.UserId
+        local function apply(image)
+            if avatar.userId == userId and avatar.image.Parent then
+                avatar.image.Image = image
+                avatar.image.ImageTransparency = 0
+                avatar.initial.Visible = false
+            end
+        end
+        if thumbCache[userId] then
+            apply(thumbCache[userId])
+            return
+        end
+        task.spawn(function()
+            local ok, image = pcall(function()
+                return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+            end)
+            if ok and image then
+                thumbCache[userId] = image
+                apply(image)
+            end
+        end)
+    end
+
+    -- ESP วาดด้วย Drawing API (กรอบ • เส้นชี้ • ชื่อ + ระยะ) — เป้าหมายที่เลือกจะเป็นสีทอง
+    local espObjects = {}
+
+    local function removeESP(player)
+        local esp = espObjects[player]
+        if not esp then
+            return
+        end
+        for _, drawing in pairs(esp) do
+            pcall(function()
+                drawing:Remove()
+            end)
+        end
+        espObjects[player] = nil
+    end
+
+    local function clearESP()
+        for player in pairs(espObjects) do
+            removeESP(player)
+        end
+    end
+
+    local function newDrawing(kind, props)
+        local drawing = Drawing.new(kind)
+        for key, value in pairs(props) do
+            drawing[key] = value
+        end
+        return drawing
+    end
+
+    local function getESP(player)
+        local esp = espObjects[player]
+        if not esp then
+            esp = {
+                tracer = newDrawing("Line", { Thickness = 1.5, Visible = false }),
+                box = newDrawing("Square", { Thickness = 1, Filled = false, Visible = false }),
+                name = newDrawing("Text", { Size = 14, Center = true, Outline = true, Visible = false }),
+            }
+            espObjects[player] = esp
+        end
+        return esp
+    end
+
+    local function updateESP(cam)
+        local myRoot = getRoot(LocalPlayer)
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                local esp = getESP(player)
+                local root = getRoot(player)
+                local head = player.Character and player.Character:FindFirstChild("Head")
+                local screenPos, onScreen
+                if root and head then
+                    screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
+                end
+                if onScreen then
+                    local isTarget = player == selectedPlayer
+                    local headPos = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                    local legPos = cam:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+                    local height = math.abs(headPos.Y - legPos.Y)
+                    local width = height / 2
+                    local dist = myRoot and math.floor((myRoot.Position - root.Position).Magnitude) or 0
+
+                    esp.tracer.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
+                    esp.tracer.To = Vector2.new(screenPos.X, screenPos.Y)
+                    esp.tracer.Color = isTarget and TARGET_COLOR or ESP_COLOR
+                    esp.box.Size = Vector2.new(width, height)
+                    esp.box.Position = Vector2.new(screenPos.X - width / 2, headPos.Y)
+                    esp.box.Color = isTarget and TARGET_COLOR or WHITE
+                    esp.name.Text = string.format("%s [%dm]", player.Name, dist)
+                    esp.name.Position = Vector2.new(screenPos.X, headPos.Y - 18)
+                    esp.name.Color = isTarget and TARGET_COLOR or WHITE
+                end
+                esp.tracer.Visible = onScreen == true
+                esp.box.Visible = onScreen == true
+                esp.name.Visible = onScreen == true
+            end
+        end
+    end
+
+    -- คืนกล้องกลับมาที่ตัวเอง (ไม่ยุ่งกับกล้องตอนนั่งยานพาหนะ)
+    local function restoreCamera()
+        local cam = workspace.CurrentCamera
+        local myHumanoid = getHumanoid(LocalPlayer)
+        if not cam or not myHumanoid then
+            return
+        end
+        local subject = cam.CameraSubject
+        if subject == nil or (subject:IsA("Humanoid") and subject ~= myHumanoid) then
+            cam.CameraSubject = myHumanoid
+        end
+    end
+
+    -- ═════════════════════════ หน้า: ผู้เล่น ═════════════════════════
+    local PlayerPage = createPage("Players", Theme.Pink)
+    createPageHeader(PlayerPage, "ผู้เล่น", "มองผู้เล่นทะลุกำแพง สเปคจอ และวาร์ปไปหา", Theme.Pink)
+    createSection(PlayerPage, "มองผู้เล่น (ESP)", Theme.Pink, 1)
+
+    local espToggle
+    espToggle = createToggle(PlayerPage, {
+        name = "PlayerESPBtn",
+        icon = "ESP",
+        title = "ESP ผู้เล่น",
+        desc = "กรอบ • เส้นชี้ • ชื่อ และระยะห่างของทุกคน",
+        accent = Theme.Pink,
+        order = 2,
+        onToggle = function(on)
+            if on and not hasDrawing then
+                espToggle:Set(false, true)
+                notify("ESP ผู้เล่น", "ตัวรันนี้ไม่รองรับ Drawing API", Theme.Crimson, "ESP")
+                setStatus("ESP ใช้ไม่ได้ (ไม่มี Drawing API)", Theme.Crimson)
+                return
+            end
+            getgenv().PlayerESPActive = on
+            if not on then
+                clearESP()
+            end
+            refreshLive()
+            notify("ESP ผู้เล่น", on and "เปิดแล้ว — เป้าหมายจะเป็นสีทอง" or "ปิดใช้งานแล้ว", Theme.Pink, "ESP")
+            setStatus(on and "กำลังแสดง ESP ผู้เล่น" or "ปิด ESP ผู้เล่น", on and Theme.Pink or Theme.Muted)
+        end,
+    })
+
+    createSection(PlayerPage, "เป้าหมาย", TARGET_COLOR, 3)
+    local TargetCard = create("Frame", {
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 0.08,
+        Size = UDim2.new(1, -10, 0, 68),
+        LayoutOrder = 4,
+        Parent = PlayerPage,
+    })
+    corner(TargetCard, 12)
+    gradient(TargetCard, { Theme.Card:Lerp(TARGET_COLOR, 0.12), Theme.Card }, 0)
+    stroke(TargetCard, TARGET_COLOR, 1, 0.55)
+    local targetAvatar = avatarBubble(TargetCard, 42)
+    targetAvatar.frame.Position = UDim2.fromOffset(12, 13)
+    stroke(targetAvatar.frame, TARGET_COLOR, 1.5, 0)
+    local TargetName = text(TargetCard, {
+        Position = UDim2.fromOffset(64, 14),
+        Size = UDim2.new(1, -180, 0, 18),
+        Text = "",
+        TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local TargetInfo = text(TargetCard, {
+        Position = UDim2.fromOffset(64, 34),
+        Size = UDim2.new(1, -76, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    local TargetPill = text(TargetCard, {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 12),
+        Size = UDim2.fromOffset(0, 20),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 0.8,
+        BackgroundColor3 = Theme.Off,
+        Font = Enum.Font.GothamBlack,
+        Text = "",
+        TextSize = 9,
+    })
+    round(TargetPill)
+    create("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = TargetPill })
+
+    local function refreshTarget()
+        local player = selectedPlayer
+        if player then
+            local dist = distanceTo(player)
+            TargetName.Text = player.DisplayName
+            TargetInfo.Text = "@" .. player.Name .. "   •   " .. (dist and studs(dist) or "ไม่พบตัวละคร")
+        else
+            TargetName.Text = "ยังไม่ได้เลือกเป้าหมาย"
+            TargetInfo.Text = "แตะชื่อผู้เล่นในรายชื่อด้านล่างเพื่อเลือก"
+        end
+        local pillText, pillColor
+        if not player then
+            pillText, pillColor = "ยังไม่เลือก", Theme.Muted
+        elseif getgenv().SpectateActive then
+            pillText, pillColor = "กำลังสเปค", TARGET_COLOR
+        else
+            pillText, pillColor = "พร้อม", Theme.Mint
+        end
+        TargetPill.Text = pillText
+        TargetPill.TextColor3 = pillColor:Lerp(WHITE, 0.3)
+        TargetPill.BackgroundColor3 = pillColor
+    end
+
+    local spectateToggle
+    local function setSpectate(on, message)
+        if on and not selectedPlayer then
+            spectateToggle:Set(false, true)
+            notify("สเปคจอ", "เลือกผู้เล่นจากรายชื่อก่อนนะ", Theme.Crimson, "▶")
+            return
+        end
+        getgenv().SpectateActive = on
+        spectateToggle:Set(on, true)
+        if not on then
+            restoreCamera()
+        end
+        refreshLive()
+        refreshTarget()
+        if on then
+            notify("สเปคจอ", "กำลังดูจอของ " .. selectedPlayer.DisplayName, TARGET_COLOR, "▶")
+            setStatus("กำลังสเปคจอ " .. selectedPlayer.DisplayName, TARGET_COLOR)
+        else
+            notify("สเปคจอ", message or "กล้องกลับมาที่ตัวเองแล้ว", Theme.Muted, "▶")
+            setStatus("ปิดการสเปคจอแล้ว", Theme.Muted)
+        end
+    end
+
+    spectateToggle = createToggle(PlayerPage, {
+        name = "SpectateBtn",
+        icon = "▶",
+        title = "สเปคจอ (Spectate)",
+        desc = "ย้ายกล้องไปดูมุมมองของเป้าหมาย",
+        accent = TARGET_COLOR,
+        order = 5,
+        onClick = function()
+            setSpectate(not getgenv().SpectateActive)
+        end,
+    })
+
+    createActionRow(PlayerPage, {
+        icon = "TP",
+        title = "วาร์ปไปหาเป้าหมาย",
+        desc = "ย้ายไปยืนเหนือผู้เล่นที่เลือกไว้",
+        accent = Theme.Cyan,
+        order = 6,
+        callback = function()
+            if not selectedPlayer then
+                notify("วาร์ปหาผู้เล่น", "เลือกผู้เล่นจากรายชื่อก่อนนะ", Theme.Crimson, "TP")
+                return
+            end
+            local myRoot, targetRoot = getRoot(LocalPlayer), getRoot(selectedPlayer)
+            if not myRoot or not targetRoot then
+                notify("วาร์ปหาผู้เล่น", "ไม่พบตัวละครของคุณหรือเป้าหมาย", Theme.Crimson, "TP")
+                setStatus("วาร์ปไม่สำเร็จ • ไม่พบตัวละคร", Theme.Crimson)
+                return
+            end
+            myRoot.CFrame = targetRoot.CFrame + Vector3.new(0, 3, 0)
+            notify("วาร์ปหาผู้เล่น", "วาร์ปไปหา " .. selectedPlayer.DisplayName .. " แล้ว", Theme.Cyan, "TP")
+            setStatus("วาร์ปไปหา " .. selectedPlayer.DisplayName .. " แล้ว", Theme.Cyan)
+        end,
+    })
+
+    -- ─────────── รายชื่อผู้เล่นในเซิร์ฟเวอร์ (อัปเดตอัตโนมัติ) ───────────
+    local PlayerListTitle = createSection(PlayerPage, "ผู้เล่นในเซิร์ฟเวอร์", Theme.Violet, 7)
+    local PlayerList = create("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -10, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 8,
+        Parent = PlayerPage,
+    })
+    create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6), Parent = PlayerList })
+    local PlayerListEmpty = text(PlayerList, {
+        Size = UDim2.new(1, 0, 0, 40),
+        Font = Enum.Font.GothamMedium,
+        Text = "ยังไม่มีผู้เล่นคนอื่นในเซิร์ฟเวอร์",
+        TextColor3 = Theme.Muted,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Center,
+    })
+
+    local function renderPlayerRow(row)
+        local selected = row.player == selectedPlayer
+        local bg = selected and Theme.Card:Lerp(TARGET_COLOR, 0.16) or (row.hovered and Theme.CardHover or Theme.Card)
+        tween(row.button, 0.2, { BackgroundColor3 = bg })
+        tween(row.stroke, 0.25, { Color = selected and TARGET_COLOR or Theme.Stroke, Transparency = selected and 0.15 or 0.35 })
+        row.dist.TextColor3 = selected and TARGET_COLOR or Theme.SubText
+    end
+
+    local function sortPlayerRows()
+        local rows = {}
+        for _, row in pairs(playerRows) do
+            table.insert(rows, row)
+        end
+        table.sort(rows, function(a, b)
+            return a.player.DisplayName:lower() < b.player.DisplayName:lower()
+        end)
+        for i, row in ipairs(rows) do
+            row.button.LayoutOrder = i
+        end
+        PlayerListEmpty.Visible = #rows == 0
+        PlayerListTitle.Text = string.format("ผู้เล่นในเซิร์ฟเวอร์  •  %d คน", #rows)
+    end
+
+    local function selectPlayer(player, silent)
+        selectedPlayer = player
+        showAvatar(targetAvatar, player)
+        for _, row in pairs(playerRows) do
+            renderPlayerRow(row)
+        end
+        if not player and getgenv().SpectateActive then
+            setSpectate(false)
+        end
+        refreshTarget()
+        if silent then
+            return
+        end
+        if player then
+            notify("เลือกเป้าหมาย", player.DisplayName .. "  (@" .. player.Name .. ")", TARGET_COLOR, "◉")
+            setStatus((getgenv().SpectateActive and "กำลังสเปคจอ " or "เป้าหมาย: ") .. player.DisplayName, TARGET_COLOR)
+        else
+            notify("เป้าหมาย", "ยกเลิกการเลือกแล้ว", Theme.Muted, "◉")
+            setStatus("ยกเลิกเป้าหมายแล้ว", Theme.Muted)
+        end
+    end
+
+    local function addPlayerRow(player)
+        if player == LocalPlayer or playerRows[player] then
+            return
+        end
+        local button = create("TextButton", {
+            Name = player.Name,
+            AutoButtonColor = false,
+            Text = "",
+            BackgroundColor3 = Theme.Card,
+            BackgroundTransparency = 0.08,
+            Size = UDim2.new(1, 0, 0, 46),
+            Parent = PlayerList,
+        })
+        corner(button, 10)
+        local rowStroke = stroke(button, Theme.Stroke, 1, 0.35)
+        attachRipple(button, function()
+            return TARGET_COLOR
+        end)
+        local avatar = avatarBubble(button, 32)
+        avatar.frame.Position = UDim2.fromOffset(10, 7)
+        showAvatar(avatar, player)
+        text(button, {
+            Position = UDim2.fromOffset(52, 7),
+            Size = UDim2.new(1, -150, 0, 18),
+            Text = player.DisplayName,
+            TextSize = 12,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        text(button, {
+            Position = UDim2.fromOffset(52, 24),
+            Size = UDim2.new(1, -150, 0, 14),
+            Font = Enum.Font.GothamMedium,
+            Text = "@" .. player.Name,
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local distLabel = text(button, {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0),
+            Size = UDim2.fromOffset(86, 16),
+            Text = "--",
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Right,
+        })
+
+        local row = { player = player, button = button, stroke = rowStroke, dist = distLabel, hovered = false }
+        button.MouseEnter:Connect(function()
+            row.hovered = true
+            renderPlayerRow(row)
+        end)
+        button.MouseLeave:Connect(function()
+            row.hovered = false
+            renderPlayerRow(row)
+        end)
+        button.MouseButton1Click:Connect(function()
+            -- แตะคนเดิมซ้ำ = ยกเลิกการเลือก
+            selectPlayer(selectedPlayer ~= player and player or nil)
+        end)
+        playerRows[player] = row
+        renderPlayerRow(row)
+        sortPlayerRows()
+    end
+
+    local function removePlayerRow(player)
+        removeESP(player)
+        local row = playerRows[player]
+        if row then
+            row.button:Destroy()
+            playerRows[player] = nil
+        end
+        if player == selectedPlayer then
+            if getgenv().SpectateActive then
+                setSpectate(false, player.DisplayName .. " ออกจากเซิร์ฟแล้ว")
+            else
+                notify("เป้าหมาย", player.DisplayName .. " ออกจากเซิร์ฟแล้ว", Theme.Muted, "◉")
+            end
+            selectPlayer(nil, true)
+        end
+        sortPlayerRows()
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        addPlayerRow(player)
+    end
+    sortPlayerRows()
+    refreshTarget()
+    Players.PlayerAdded:Connect(function(player)
+        if alive() then
+            addPlayerRow(player)
+        end
+    end)
+    Players.PlayerRemoving:Connect(function(player)
+        if alive() then
+            removePlayerRow(player)
+        end
+    end)
+
+    -- อัปเดตระยะห่างในรายชื่อและการ์ดเป้าหมาย
+    task.spawn(function()
+        while alive() and ScreenGui.Parent do
+            task.wait(0.5)
+            for player, row in pairs(playerRows) do
+                local dist = distanceTo(player)
+                row.dist.Text = dist and studs(dist) or "--"
+            end
+            refreshTarget()
+        end
+    end)
+
+    -- เรียกทุกเฟรมจากลูปหลัก: ล็อกกล้องสเปค (ตามต่อได้แม้เป้าหมายเกิดใหม่) + วาด ESP
+    function updatePlayerTools(camera)
+        if getgenv().SpectateActive then
+            local targetHumanoid = getHumanoid(selectedPlayer)
+            if targetHumanoid and camera.CameraSubject ~= targetHumanoid then
+                camera.CameraSubject = targetHumanoid
+            end
+        end
+        if getgenv().PlayerESPActive then
+            pcall(updateESP, camera)
+        end
+    end
+
+    -- เก็บกวาดตอนรันสคริปต์ใหม่/ปิดเมนู: ลบ ESP และคืนกล้อง
+    function stopPlayerTools()
+        clearESP()
+        restoreCamera()
+    end
+end
+
+-- ═════════════════════════ แท็บด้านข้าง ═════════════════════════
+local TABS = {
+    { id = "Lucky", name = "ลัคกี้บล็อก", sub = "เก็บ Hacker", icon = "LB", accent = Theme.Mint },
+    { id = "Upgrade", name = "อัปเกรด", sub = "แท่นใน plot", icon = "UP", accent = Theme.Gold },
+    { id = "Warp", name = "วาร์ป", sub = "จุดวาร์ป", icon = "TP", accent = Theme.Cyan },
+    { id = "Players", name = "ผู้เล่น", sub = "ESP • สเปคจอ", icon = "◉", accent = Theme.Pink },
+}
+local TAB_H, TAB_GAP = 44, 5
+
+local TabIndicator = create("Frame", {
+    Position = UDim2.fromOffset(2, 18),
+    Size = UDim2.fromOffset(3, 24),
+    BackgroundColor3 = Theme.Mint,
+    BorderSizePixel = 0,
+    Parent = Sidebar,
+})
+round(TabIndicator)
+
+local tabWidgets = {}
+local currentTab = nil
+
+local function selectTab(id)
+    if currentTab == id then
+        return
+    end
+    currentTab = id
+    for _, widget in ipairs(tabWidgets) do
+        widget.render(widget.id == id)
+        if widget.id == id then
+            tween(TabIndicator, 0.45, {
+                Position = UDim2.fromOffset(2, widget.y + 10),
+                BackgroundColor3 = widget.accent,
+            }, Enum.EasingStyle.Back)
+        end
+    end
+    for pageId, page in pairs(pages) do
+        if pageId == id then
+            page.Visible = true
+            page.Position = UDim2.fromOffset(24, 0)
+            tween(page, 0.35, { Position = UDim2.fromOffset(0, 0) })
+        else
+            page.Visible = false
+        end
+    end
+end
+
+for i, info in ipairs(TABS) do
+    local y = 8 + (i - 1) * (TAB_H + TAB_GAP)
+    local btn = create("TextButton", {
+        Name = info.id .. "Tab",
+        AutoButtonColor = false,
+        Text = "",
+        Position = UDim2.fromOffset(8, y),
+        Size = UDim2.new(1, -16, 0, TAB_H),
+        BackgroundColor3 = WHITE,
+        BackgroundTransparency = 1,
+        Parent = Sidebar,
+    })
+    corner(btn, 10)
+    gradient(btn, { info.accent, info.accent }, 0, fadeSeq({ { 0, 0.55 }, { 1, 0.95 } }))
+    local chip, _, chipGrad, chipStroke = iconChip(btn, info.icon, info.accent, 30)
+    chip.Position = UDim2.fromOffset(7, 7)
+    local nameLabel = text(btn, {
+        Position = UDim2.fromOffset(45, 6),
+        Size = UDim2.new(1, -50, 0, 18),
+        Text = info.name,
+        TextSize = 13,
+    })
+    local subLabel = text(btn, {
+        Position = UDim2.fromOffset(45, 23),
+        Size = UDim2.new(1, -50, 0, 14),
+        Font = Enum.Font.GothamMedium,
+        Text = info.sub,
+        TextColor3 = Theme.Muted,
+        TextSize = 9,
+    })
+
+    local widget = { id = info.id, y = y, accent = info.accent, active = false, hovered = false }
+    function widget.render(active)
+        if active ~= nil then
+            widget.active = active
+        end
+        local on = widget.active
+        tween(btn, 0.25, { BackgroundTransparency = on and 0 or (widget.hovered and 0.65 or 1) })
+        chipGrad.Color = chipSequence(on and info.accent or Theme.Off)
+        chipStroke.Transparency = on and 0.4 or 0.85
+        tween(nameLabel, 0.25, { TextColor3 = on and WHITE or Theme.SubText })
+        tween(subLabel, 0.25, { TextColor3 = on and info.accent:Lerp(WHITE, 0.4) or Theme.Muted })
+    end
+    btn.MouseEnter:Connect(function()
+        widget.hovered = true
+        widget.render()
+    end)
+    btn.MouseLeave:Connect(function()
+        widget.hovered = false
+        widget.render()
+    end)
+    btn.MouseButton1Click:Connect(function()
+        selectTab(info.id)
+    end)
+    table.insert(tabWidgets, widget)
+    widget.render(false)
+end
+
+-- ═════════════════════════ ปุ่มลอยเปิด/ปิดเมนู ═════════════════════════
+local ToggleHolder = create("Frame", {
+    Name = "ToggleHolder",
+    Position = UDim2.new(0.05, 0, 0.1, 0),
+    Size = UDim2.fromOffset(178, 48),
+    BackgroundTransparency = 1,
+    Parent = ScreenGui,
+})
+local ToggleGlow = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.new(1, 10, 1, 10),
+    BackgroundColor3 = WHITE,
+    BackgroundTransparency = 0.7,
+    Parent = ToggleHolder,
+})
+corner(ToggleGlow, 19)
+gradient(ToggleGlow, { Theme.Crimson, Theme.Violet })
+
+local ToggleBtn = create("TextButton", {
+    Name = "ToggleBtn",
+    AutoButtonColor = false,
+    Text = "",
+    Size = UDim2.fromScale(1, 1),
+    BackgroundColor3 = WHITE,
+    Parent = ToggleHolder,
+})
+corner(ToggleBtn, 14)
+gradient(ToggleBtn, { Color3.fromRGB(74, 14, 42), Color3.fromRGB(34, 16, 62) })
+local ToggleStroke = stroke(ToggleBtn, WHITE, 2, 0)
+spin(gradient(ToggleStroke, { Theme.Gold, Theme.Crimson, Theme.Violet, Theme.Cyan, Theme.Gold }), 90)
+attachRipple(ToggleBtn, function()
+    return Theme.Crimson
+end)
+
+local ToggleAvatar = create("ImageLabel", {
+    Name = "PlayerThumbnail",
+    Position = UDim2.fromOffset(8, 8),
+    Size = UDim2.fromOffset(32, 32),
+    BackgroundColor3 = Color3.fromRGB(38, 31, 67),
+    ImageTransparency = 1,
+    Parent = ToggleBtn,
+})
+round(ToggleAvatar)
+stroke(ToggleAvatar, Theme.Gold, 1.5, 0)
+local ToggleInitial = text(ToggleAvatar, {
+    Size = UDim2.fromScale(1, 1),
+    Font = Enum.Font.GothamBlack,
+    Text = string.sub(LocalPlayer.Name, 1, 1):upper(),
+    TextColor3 = Color3.fromRGB(255, 243, 196),
+    TextSize = 15,
+    TextXAlignment = Enum.TextXAlignment.Center,
+})
+local ToggleTitle = text(ToggleBtn, {
+    Position = UDim2.fromOffset(48, 7),
+    Size = UDim2.new(1, -56, 0, 20),
+    Font = Enum.Font.GothamBlack,
+    Text = "JERDDXIAO",
+    TextColor3 = WHITE,
+    TextSize = 16,
+})
+shimmer(gradient(ToggleTitle, TITLE_COLORS), 0.35)
+local ToggleSub = text(ToggleBtn, {
+    Position = UDim2.fromOffset(48, 26),
+    Size = UDim2.new(1, -56, 0, 14),
+    Font = Enum.Font.GothamMedium,
+    Text = "เมนู: เปิดอยู่",
+    TextColor3 = Theme.SubText,
+    TextSize = 10,
+})
+
+-- ═════════════════════════ เปิด/ปิด/ย่อ หน้าต่าง ═════════════════════════
+local windowOpen, collapsed = true, false
+
+local function computeScale()
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+    return math.clamp(math.min((viewport.X - 24) / WINDOW_W, (viewport.Y - 80) / WINDOW_H), 0.5, 1)
+end
+
+local baseScale = computeScale()
+local function placeWindow()
+    MainFrame.Position = UDim2.new(0.5, 0, 0.5, -math.floor(WINDOW_H * baseScale / 2))
+end
+WindowScale.Scale = baseScale
+placeWindow()
+if workspace.CurrentCamera then
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+        baseScale = computeScale()
+        placeWindow()
+        if windowOpen then
+            WindowScale.Scale = baseScale
+        end
+    end)
+end
+
+local function setWindow(open)
+    windowOpen = open
+    ToggleSub.Text = open and "เมนู: เปิดอยู่" or "เมนู: ซ่อนอยู่"
+    if open then
+        MainFrame.Visible = true
+        WindowScale.Scale = baseScale * 0.82
+        tween(WindowScale, 0.45, { Scale = baseScale }, Enum.EasingStyle.Back)
+    else
+        tween(WindowScale, 0.2, { Scale = baseScale * 0.82 }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+        task.delay(0.2, function()
+            if not windowOpen then
+                MainFrame.Visible = false
+            end
+        end)
+    end
+end
+
+local function setCollapsed(state)
+    collapsed = state
+    MinBtn.Text = state and "+" or "—"
+    tween(MainFrame, 0.4, { Size = UDim2.fromOffset(WINDOW_W, state and COLLAPSED_H or WINDOW_H) })
+end
+
+makeDraggable(Banner, MainFrame)
+local toggleWasDragged = makeDraggable(ToggleBtn, ToggleHolder)
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    if toggleWasDragged() then
+        return
+    end
+    setWindow(not windowOpen)
+end)
+MinBtn.MouseButton1Click:Connect(function()
+    setCollapsed(not collapsed)
+end)
+CloseBtn.MouseButton1Click:Connect(function()
+    setWindow(false)
+    notify("ซ่อนเมนูแล้ว", "กดปุ่ม JERDDXIAO หรือ RightShift เพื่อเปิด", Theme.Violet, "J")
+end)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or not alive() then
+        return
+    end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        setWindow(not windowOpen)
+    end
+end)
+
+-- ═════════════════════════ รูปโปรไฟล์ ═════════════════════════
+task.spawn(function()
+    local success, thumbnail = pcall(function()
+        local image, isReady = Players:GetUserThumbnailAsync(
+            LocalPlayer.UserId,
+            Enum.ThumbnailType.HeadShot,
+            Enum.ThumbnailSize.Size100x100
+        )
+        if not isReady then
+            task.wait(0.5)
+            image = Players:GetUserThumbnailAsync(
+                LocalPlayer.UserId,
+                Enum.ThumbnailType.HeadShot,
+                Enum.ThumbnailSize.Size100x100
+            )
+        end
+        return image
+    end)
+
+    if success then
+        AvatarImage.Image = thumbnail
+        AvatarImage.ImageTransparency = 0
+        AvatarInitial.Visible = false
+        ToggleAvatar.Image = thumbnail
+        ToggleAvatar.ImageTransparency = 0
+        ToggleInitial.Visible = false
+    else
+        warn("[JERDDXIAO] Failed to load Roblox avatar thumbnail: " .. tostring(thumbnail))
+    end
+end)
+
+-- ═════════════════════════ ลูปหลัก (แอนิเมชัน + ผู้เล่น) ═════════════════════════
+local fpsFrames, fpsTimer = 0, 0
+local renderConnection
+renderConnection = RunService.RenderStepped:Connect(function(dt)
+    if not alive() or not ScreenGui.Parent then
+        renderConnection:Disconnect()
+        stopPlayerTools()
+        return
+    end
+
+    local now = os.clock()
+    for _, item in ipairs(spinners) do
+        item[1].Rotation = (now * item[2]) % 360
+    end
+    for _, item in ipairs(shimmers) do
+        item[1].Offset = Vector2.new(((now * item[2]) % 2) - 1, 0)
+    end
+    local pulse = (math.sin(now * 3.2) + 1) / 2
+    ToggleGlow.BackgroundTransparency = 0.55 + pulse * 0.35
+    LogoRingStroke.Transparency = 0.1 + pulse * 0.5
+    StatusDot.BackgroundTransparency = pulse * 0.6
+    for _, row in pairs(liveRows) do
+        row.glow.Transparency = row.on and (0.2 + pulse * 0.7) or 1
+    end
+
+    fpsFrames = fpsFrames + 1
+    fpsTimer = fpsTimer + dt
+    if fpsTimer >= 0.5 then
+        FooterRight.Text = string.format("FPS %d   •   RShift ซ่อนเมนู", math.floor(fpsFrames / fpsTimer + 0.5))
+        fpsFrames, fpsTimer = 0, 0
+    end
+
+    -- สเปคจอ + ESP ผู้เล่น
+    if workspace.CurrentCamera then
+        updatePlayerTools(workspace.CurrentCamera)
+    end
+end)
+
+-- ═════════════════════════ เอฟเฟกต์อลังการ ═════════════════════════
+-- ประกายไฟลอยขึ้นจากแบนเนอร์
+task.spawn(function()
+    local sparkColors = { Theme.Crimson, Theme.Gold, Theme.Violet, Theme.Ember }
+    while alive() and ScreenGui.Parent do
+        task.wait(0.12)
+        if MainFrame.Visible then
+            local size = math.random(2, 4)
+            local spark = create("Frame", {
+                BorderSizePixel = 0,
+                BackgroundColor3 = sparkColors[math.random(#sparkColors)],
+                BackgroundTransparency = 0.15,
+                Size = UDim2.fromOffset(size, size),
+                Position = UDim2.fromOffset(math.random(60, 520), 60),
+                ZIndex = 0,
+                Parent = Banner,
+            })
+            round(spark)
+            local life = math.random(12, 22) / 10
+            tween(spark, life, {
+                Position = spark.Position + UDim2.fromOffset(math.random(-14, 14), -math.random(25, 55)),
+                BackgroundTransparency = 1,
+            }, Enum.EasingStyle.Sine)
+            task.delay(life, function()
+                spark:Destroy()
+            end)
+        end
+    end
+end)
+
+-- ชื่อ JERDDXIAO กระตุกแบบ glitch เป็นระยะ
+task.spawn(function()
+    while alive() and ScreenGui.Parent do
+        task.wait(math.random(25, 50) / 10)
+        for _ = 1, 4 do
+            TitleGhostA.Position = GHOST_A_POS + UDim2.fromOffset(math.random(-4, 4), math.random(-2, 2))
+            TitleGhostB.Position = GHOST_B_POS + UDim2.fromOffset(math.random(-4, 4), math.random(-2, 2))
+            task.wait(0.05)
+        end
+        TitleGhostA.Position = GHOST_A_POS
+        TitleGhostB.Position = GHOST_B_POS
+    end
+end)
+
+-- ═════════════════════════ อินโทรตอนเปิด ═════════════════════════
+refreshLive()
+selectTab("Lucky")
+
+task.spawn(function()
+    local titleLayers = { TitleMain, TitleGhostA, TitleGhostB }
+    for _, label in ipairs(titleLayers) do
+        label.MaxVisibleGraphemes = 0
+    end
+    MainFrame.Visible = true
+    WindowScale.Scale = baseScale * 0.5
+    tween(WindowScale, 0.7, { Scale = baseScale }, Enum.EasingStyle.Back)
+    task.wait(0.3)
+    for i = 1, #"JERDDXIAO" do
+        for _, label in ipairs(titleLayers) do
+            label.MaxVisibleGraphemes = i
+        end
+        task.wait(0.05)
+    end
+    for _, label in ipairs(titleLayers) do
+        label.MaxVisibleGraphemes = -1
+    end
+    notify("JERDDXIAO พร้อมลุย!", "ยินดีต้อนรับ " .. LocalPlayer.DisplayName, Theme.Crimson, "J", 3.5)
+end)
+
+print("[JERDDXIAO] โหลดเมนูเรียบร้อยแล้ว")
