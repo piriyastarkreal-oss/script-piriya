@@ -1446,7 +1446,25 @@ do
     local HACKER_NAME = "Hacker Lucky Block"
     local HACKER_COLOR = Theme.Mint
     local SIZE_RANK = { Massive = 3, Big = 2 }
+    -- เกมย่อ/ขยายบล็อกให้ด้านยาวสุด = 5.25 x2 (ด่าน 8+) = 10.5 สตั๊ด • Big x1.5 = 15.75 • Massive x2 = 21
+    local BIG_MIN_EXTENT, MASSIVE_MIN_EXTENT = 13, 18.5
+    local SIZE_LABEL = { "ปกติ", "Big", "Massive" }
     local busy = false
+
+    -- ขนาดจากชื่อ ("Stage14_Big ...") และจากขนาดจริงของโมเดล เอาค่าที่ใหญ่กว่า
+    local function blockRank(model)
+        local rank = SIZE_RANK[string.match(model.Name, "^Stage%d+_(%a+) ")] or 1
+        local ok, extents = pcall(model.GetExtentsSize, model)
+        if ok and extents then
+            local longest = math.max(extents.X, extents.Y, extents.Z)
+            if longest >= MASSIVE_MIN_EXTENT then
+                rank = math.max(rank, 3)
+            elseif longest >= BIG_MIN_EXTENT then
+                rank = math.max(rank, 2)
+            end
+        end
+        return rank
+    end
 
     local function getRoot()
         local char = LocalPlayer.Character
@@ -1473,8 +1491,7 @@ do
                 -- บล็อกติวของคนอื่นเก็บไม่ได้
                 local tutorialOwner = model:GetAttribute("TutorialLuckyBlock") == true and tonumber(model:GetAttribute("TutorialOwnerUserId"))
                 if prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled and (not tutorialOwner or tutorialOwner == LocalPlayer.UserId) then
-                    local rank = SIZE_RANK[string.match(model.Name, "^Stage%d+_(%a+) ")] or 1
-                    table.insert(found, { model = model, prompt = prompt, rank = rank })
+                    table.insert(found, { model = model, prompt = prompt, rank = blockRank(model) })
                 end
             end
         end
@@ -1505,25 +1522,68 @@ do
         return best, bestDist
     end
 
-    local function homePosition()
+    local function getOwnPlot()
         local plots = workspace:FindFirstChild("Plots")
         if not plots then
             return nil
         end
         for _, plot in ipairs(plots:GetChildren()) do
             if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
-                local spawnPart = plot:FindFirstChild("Spawn")
-                if spawnPart and spawnPart:IsA("BasePart") then
-                    return spawnPart.Position + Vector3.new(0, spawnPart.Size.Y / 2 + 3, 0)
-                end
-                local base = plot:FindFirstChild("Base", true)
-                if base and base:IsA("BasePart") then
-                    return base.Position + Vector3.new(0, base.Size.Y / 2 + 4, 0)
-                end
-                return plot:GetPivot().Position + Vector3.new(0, 5, 0)
+                return plot
             end
         end
         return nil
+    end
+
+    local function homePosition()
+        local plot = getOwnPlot()
+        if not plot then
+            return nil
+        end
+        local spawnPart = plot:FindFirstChild("Spawn")
+        if spawnPart and spawnPart:IsA("BasePart") then
+            return spawnPart.Position + Vector3.new(0, spawnPart.Size.Y / 2 + 3, 0)
+        end
+        local base = plot:FindFirstChild("Base", true)
+        if base and base:IsA("BasePart") then
+            return base.Position + Vector3.new(0, base.Size.Y / 2 + 4, 0)
+        end
+        return plot:GetPivot().Position + Vector3.new(0, 5, 0)
+    end
+
+    -- ลัคกี้บล็อกที่วางบนแท่นในบ้าน: plot.Items[เลขแท่น] ที่มี LuckyBlock = true
+    -- เปิดได้เมื่อถึงเวลา LuckyBlockOpenAt (เวลาเซิร์ฟ) • แท่น 1-10 อยู่ใน Podiums, 11+ อยู่ใน Upgrades
+    local function placedLuckyBlocks(plot)
+        local list = {}
+        local items = plot:FindFirstChild("Items")
+        if not items then
+            return list
+        end
+        local now = workspace:GetServerTimeNow()
+        for _, item in ipairs(items:GetChildren()) do
+            local number = tonumber(item.Name)
+            if number and item:GetAttribute("LuckyBlock") == true then
+                local podium
+                for _, folderName in ipairs({ number > 10 and "Upgrades" or "Podiums", "Podiums", "Upgrades" }) do
+                    local folder = plot:FindFirstChild(folderName)
+                    podium = folder and folder:FindFirstChild(item.Name)
+                    if podium then
+                        break
+                    end
+                end
+                local promptPart = podium and podium:FindFirstChild("Prompt")
+                local openAt = tonumber(item:GetAttribute("LuckyBlockOpenAt"))
+                table.insert(list, {
+                    number = number,
+                    promptPart = promptPart and promptPart:IsA("BasePart") and promptPart or nil,
+                    remaining = openAt and math.max(0, math.ceil(openAt - now)) or nil,
+                })
+            end
+        end
+        table.sort(list, function(a, b)
+            return a.number < b.number
+        end)
+        return list
     end
 
     -- Tween ตัวละครแบบทะลุกำแพง ความเร็วคงที่ตาม LuckyTweenSpeed (สตั๊ด/วินาที)
@@ -1599,7 +1659,7 @@ do
         if not target then
             return "none"
         end
-        setStatus("กำลังบินไปเก็บ " .. (string.gsub(target.model.Name, "^Stage%d+_", "")), HACKER_COLOR)
+        setStatus("กำลังบินไปเก็บ Hacker [" .. SIZE_LABEL[target.rank] .. "]", HACKER_COLOR)
         if not tweenTo(promptPosition(target.prompt) + Vector3.new(0, 2, 0), shouldContinue) then
             return "cancel"
         end
@@ -1689,9 +1749,9 @@ do
             best, dist = pickBest(blocks, root.Position)
         end
         if best then
-            LuckyDetail.Text = string.format("ตรงเงื่อนไข %d / %d ก้อน   •   เป้าหมาย %s ห่าง %s", #blocks, #all, (string.gsub(best.model.Name, "^Stage%d+_", "")), studs(dist))
+            LuckyDetail.Text = string.format("ตรงเงื่อนไข %d / %d ก้อน   •   เป้าหมาย [%s] ห่าง %s", #blocks, #all, SIZE_LABEL[best.rank], studs(dist))
         elseif #all > 0 then
-            LuckyDetail.Text = string.format("มี %d ก้อน แต่เล็กกว่าขนาดที่เลือก — รอก้อนใหญ่", #all)
+            LuckyDetail.Text = string.format("มี %d ก้อน แต่เป็นก้อนเล็ก — ข้าม รอก้อนใหญ่", #all)
         else
             LuckyDetail.Text = "ยังไม่เกิด — รอสักครู่ (เกิดใหม่ทุก ~8 วินาที)"
         end
@@ -1846,13 +1906,13 @@ do
         end
         busy = true
         task.spawn(function()
-            local ok, result = pcall(job)
+            local ok, result, good = pcall(job)
             busy = false
             if not ok then
                 warn("[JERDDXIAO] " .. tostring(result))
-                result = "failed"
+                result, good = "failed", false
             end
-            local good = result == "ok" or result == "home"
+            good = good or result == "ok" or result == "home"
             notify(title, RESULT_TEXT[result] or tostring(result), good and HACKER_COLOR or Theme.Crimson, icon)
             setStatus(RESULT_TEXT[result] or tostring(result), good and HACKER_COLOR or Theme.Crimson)
         end)
@@ -1886,6 +1946,77 @@ do
                 end
                 return goHome() and "home" or "cancel"
             end)
+        end,
+    })
+
+    -- เปิดลัคกี้บล็อกในบ้านทุกก้อนที่พร้อม: ไปยืนที่แท่น (เซิร์ฟเช็คระยะ) แล้วเรียก F:OpenLuckyBlock(เลขแท่น)
+    local OPEN_ERRORS = { "เกิดข้อผิดพลาด", "ต้องถือไอเทมก่อน", "ไม่มีไอเทมนี้", "rebirth ไม่พอ", "กดเร็วเกินไป", "ยังไม่ถึงเวลาเปิด", "อยู่ไกลแท่นเกินไป" }
+    local function openAllBlocks()
+        local plot = getOwnPlot()
+        if not plot then
+            return "ไม่พบ plot ของคุณ"
+        end
+        local shared = ReplicatedStorage:FindFirstChild("Shared")
+        local utils = shared and shared:FindFirstChild("Utils")
+        local network = utils and utils:FindFirstChild("Network")
+        local remote = network and network:FindFirstChild("F:OpenLuckyBlock")
+        if not remote then
+            return "ไม่พบรีโมต OpenLuckyBlock ในเกม"
+        end
+        local blocks = placedLuckyBlocks(plot)
+        if #blocks == 0 then
+            return "ไม่มีลัคกี้บล็อกวางอยู่ในบ้าน"
+        end
+        -- เกมจะเปิดบล็อกเฉพาะตอนมือว่าง (ถือของอยู่ = สลับของแทน)
+        local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:UnequipTools()
+        end
+        local opened, failed, notReady, soonest = 0, 0, 0, nil
+        local lastError = nil
+        for _, block in ipairs(blocks) do
+            if not alive() then
+                break
+            end
+            if block.remaining == nil or block.remaining > 0 then
+                notReady = notReady + 1
+                if block.remaining then
+                    soonest = math.min(soonest or math.huge, block.remaining)
+                end
+            elseif block.promptPart then
+                setStatus("กำลังเปิดบล็อกแท่น " .. block.number, Theme.Gold)
+                tweenTo(block.promptPart.Position + Vector3.new(0, 3, 0))
+                local ok, success, code = pcall(remote.InvokeServer, remote, tostring(block.number))
+                if ok and success then
+                    opened = opened + 1
+                else
+                    failed = failed + 1
+                    lastError = ok and (OPEN_ERRORS[tonumber(code)] or "เกิดข้อผิดพลาด") or "เรียกเซิร์ฟไม่สำเร็จ"
+                end
+                task.wait(0.35)
+            else
+                failed = failed + 1
+            end
+        end
+        local parts = { "เปิดแล้ว " .. opened .. " ก้อน" }
+        if notReady > 0 then
+            table.insert(parts, "ยังไม่พร้อม " .. notReady .. (soonest and (" (อีก " .. soonest .. " วิ)") or ""))
+        end
+        if failed > 0 then
+            table.insert(parts, "พลาด " .. failed .. (lastError and (" • " .. lastError) or ""))
+        end
+        return table.concat(parts, "  •  "), opened > 0
+    end
+
+    createActionCard(LuckyGrid, {
+        name = "OpenAllBlocksBtn",
+        icon = "OP",
+        title = "เปิดบล็อกทั้งหมด",
+        desc = "เปิดลัคกี้บล็อกในบ้านทุกก้อนที่พร้อม",
+        accent = Theme.Gold,
+        order = 3,
+        callback = function()
+            runManual("เปิดบล็อกทั้งหมด", "OP", openAllBlocks)
         end,
     })
 
